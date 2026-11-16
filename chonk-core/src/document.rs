@@ -82,9 +82,27 @@ impl Default for TextStyle {
     }
 }
 
+/// Animated raster source (GIF): premultiplied frames + per-frame delays.
+#[derive(Clone, Debug)]
+pub struct AnimatedImage {
+    pub frames: Vec<sk::Pixmap>,
+    pub delays_ms: Vec<u32>,
+}
+
+impl AnimatedImage {
+    pub fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn frame(&self, index: usize) -> &sk::Pixmap {
+        &self.frames[index % self.frames.len()]
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum LayerKind {
     Image { pixmap: sk::Pixmap },
+    AnimatedImage { image: AnimatedImage },
     Svg { tree: usvg::Tree },
     Text { text: String, style: TextStyle },
 }
@@ -128,6 +146,10 @@ impl Document {
 
     pub fn add_image(&mut self, pixmap: sk::Pixmap) -> &mut Layer {
         self.add_layer(LayerKind::Image { pixmap })
+    }
+
+    pub fn add_animated(&mut self, image: AnimatedImage) -> &mut Layer {
+        self.add_layer(LayerKind::AnimatedImage { image })
     }
 
     pub fn add_svg(&mut self, tree: usvg::Tree) -> &mut Layer {

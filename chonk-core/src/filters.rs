@@ -32,3 +32,26 @@ pub fn pixelate(pm: &sk::Pixmap, factor: u32) -> sk::Pixmap {
     let big = image::imageops::resize(&small, pm.width(), pm.height(), image::imageops::FilterType::Nearest);
     rgba_to_pixmap(&big)
 }
+
+#[derive(Clone, Copy, Debug)]
+pub enum Filter {
+    Blur(f32),
+    Grayscale,
+    Pixelate(u32),
+}
+
+pub fn apply_filter(pm: &sk::Pixmap, filter: Filter) -> sk::Pixmap {
+    match filter {
+        Filter::Blur(r) => blur_pixmap(pm, r),
+        Filter::Grayscale => grayscale(pm),
+        Filter::Pixelate(f) => pixelate(pm, f),
+    }
+}
+
+/// Apply a filter to every frame of an animated layer (baked once at import
+/// or effect time; per-frame compositing stays cheap).
+pub fn apply_filter_animated(image: &mut crate::document::AnimatedImage, filter: Filter) {
+    for frame in &mut image.frames {
+        *frame = apply_filter(frame, filter);
+    }
+}

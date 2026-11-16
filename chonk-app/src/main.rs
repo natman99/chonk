@@ -203,7 +203,10 @@ fn main() {
         cx.on_action({
             let view = view.clone();
             move |_: &ToggleQuote, cx: &mut App| {
-                view.update(cx, |v, _window, _cx| v.toggle_quote());
+                view.update(cx, |v, _window, cx| {
+                    v.toggle_quote();
+                    cx.notify();
+                });
             }
         });
         cx.bind_keys([KeyBinding::new("q", ToggleQuote, None)]);

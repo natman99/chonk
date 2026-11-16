@@ -110,6 +110,41 @@ fn quote_card_builds_and_renders() {
 }
 
 #[test]
+fn gif_roundtrip_and_animated_caption() {
+    use chonk_core::filters::{Filter, apply_filter_animated};
+
+    // Build a 3-frame gif: red, green, blue.
+    let frames: Vec<sk::Pixmap> =
+        [0u8, 1, 2].map(|i| solid(64, 64, sk::Color::from_rgba8(i * 100, 1, 1, 255))).to_vec();
+    let delays = vec![80u32, 90, 100];
+    let bytes = chonk_core::codecs::export_gif(&frames, &delays).unwrap();
+    let mut anim = chonk_core::codecs::load_gif(&bytes).unwrap();
+    assert_eq!(anim.frame_count(), 3);
+    assert_eq!(anim.delays_ms, delays);
+
+    // Grayscale baked into every frame.
+    apply_filter_animated(&mut anim, Filter::Grayscale);
+    for f in &anim.frames {
+        let p = f.pixels()[10 * 64 + 10];
+        assert_eq!(p.red(), p.green(), "frame should be gray");
+        assert_eq!(p.green(), p.blue());
+    }
+
+    // Caption overlay repeats across all frames; gif content animates.
+    let mut doc = Document::new(64, 64);
+    doc.add_animated(anim);
+    let mut renderer = Renderer::new();
+    let (out_frames, out_delays) = renderer.composite_animated(&doc);
+    assert_eq!(out_frames.len(), 3);
+    assert_eq!(out_delays.len(), 3);
+    let px = |pm: &sk::Pixmap| pm.pixels()[32 * 64 + 32];
+    assert_ne!(px(&out_frames[0]), px(&out_frames[1]), "frames should differ");
+    // Re-encode must still be a valid 3-frame gif.
+    let bytes2 = chonk_core::codecs::export_gif(&out_frames, &out_delays).unwrap();
+    assert_eq!(chonk_core::codecs::load_gif(&bytes2).unwrap().frame_count(), 3);
+}
+
+#[test]
 fn png_roundtrip() {
     let mut doc = Document::new(64, 64);
     doc.background = Background::Solid(sk::Color::from_rgba8(10, 200, 30, 255));

@@ -21,13 +21,67 @@ impl Renderer {
     }
 
     pub fn composite(&mut self, doc: &Document) -> sk::Pixmap {
-        self.composite_full(doc)
+        self.composite_at(doc, 0)
+    }
+
+    /// Composite one animation frame: animated layers use `frame % len`,
+    /// static layers repeat.
+    pub fn composite_at(&mut self, doc: &Document, frame: usize) -> sk::Pixmap {
+        self.composite_full(doc, frame)
+    }
+
+    /// Number of frames an animated export of `doc` would have.
+    pub fn frame_count(doc: &Document) -> usize {
+        doc.layers
+            .iter()
+            .filter(|l| l.visible)
+            .map(|l| match &l.kind {
+                LayerKind::AnimatedImage { image } => image.frame_count(),
+                _ => 1,
+            })
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// Composite every frame of an animated document. Delays come from the
+    /// animated layer with the most frames.
+    pub fn composite_animated(&mut self, doc: &Document) -> (Vec<sk::Pixmap>, Vec<u32>) {
+        let n = Self::frame_count(doc);
+        let delays = doc
+            .layers
+            .iter()
+            .filter(|l| l.visible)
+            .map(|l| match &l.kind {
+                LayerKind::AnimatedImage { image } => Some(image.delays_ms.clone()),
+                _ => None,
+            })
+            .max_by(|a, b| match (a, b) {
+                (Some(x), Some(y)) => x.len().cmp(&y.len()),
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Less,
+            })
+            .flatten()
+            .unwrap_or_else(|| vec![100; n]);
+        let frames = (0..n).map(|i| self.composite_at(doc, i)).collect();
+        (frames, delays)
     }
 
     /// Render only a rect of the document (dirty-rect editing: a drag frame
     /// costs the dragged layer's area, not the whole canvas). The caller
     /// overlays the result on its cached full canvas at `(x, y)`.
     pub fn render_region(&mut self, doc: &Document, x: u32, y: u32, w: u32, h: u32) -> sk::Pixmap {
+        self.render_region_at(doc, x, y, w, h, 0)
+    }
+
+    pub fn render_region_at(
+        &mut self,
+        doc: &Document,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        frame: usize,
+    ) -> sk::Pixmap {
         let x = x.min(doc.width);
         let y = y.min(doc.height);
         let w = w.min(doc.width - x).max(1);
@@ -50,7 +104,7 @@ impl Renderer {
             l2.transform.y -= y as f32;
             sub_doc.layers.push(l2);
         }
-        self.composite_full(&sub_doc)
+        self.composite_full(&sub_doc, frame)
     }
 
     /// Blit a region produced by `render_region` back onto a cached canvas.
@@ -65,7 +119,7 @@ impl Renderer {
         );
     }
 
-    fn composite_full(&mut self, doc: &Document) -> sk::Pixmap {
+    fn composite_full(&mut self, doc: &Document, frame: usize) -> sk::Pixmap {
         let mut canvas = sk::Pixmap::new(doc.width, doc.height).expect("valid canvas size");
 
         match &doc.background {
@@ -95,6 +149,9 @@ impl Renderer {
             match &layer.kind {
                 LayerKind::Image { pixmap } => {
                     blit(&mut canvas, pixmap, &layer.transform, layer.opacity);
+                }
+                LayerKind::AnimatedImage { image } => {
+                    blit(&mut canvas, image.frame(frame), &layer.transform, layer.opacity);
                 }
                 LayerKind::Svg { tree } => {
                     let pm = crate::svg::render(tree);

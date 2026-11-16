@@ -155,6 +155,7 @@ fn main() {
                 nl.transform = l.transform;
                 nl.opacity = l.opacity;
             }
+            LayerKind::AnimatedImage { .. } => {}
             LayerKind::Svg { tree } => {
                 let pm = chonk_core::svg::render(tree);
                 let nl = blit_doc.add_layer(LayerKind::Image { pixmap: pm });

@@ -94,3 +94,37 @@ pub fn export_webp(pm: &sk::Pixmap) -> Result<Vec<u8>, image::ImageError> {
         })?;
     Ok(out)
 }
+
+/// Decode an animated GIF into premultiplied frames + delays.
+/// (The image crate already composites delta frames into full RGBA frames.)
+pub fn load_gif(bytes: &[u8]) -> Result<crate::document::AnimatedImage, image::ImageError> {
+    use image::AnimationDecoder as _;
+    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes))?;
+    let frames = decoder.into_frames().collect_frames()?;
+    let mut out_frames = Vec::with_capacity(frames.len());
+    let mut delays_ms = Vec::with_capacity(frames.len());
+    for f in frames {
+        let (num, den) = f.delay().numer_denom_ms();
+        delays_ms.push(num / den.max(1));
+        out_frames.push(premultiply(&f.into_buffer()));
+    }
+    Ok(crate::document::AnimatedImage { frames: out_frames, delays_ms })
+}
+
+/// Encode premultiplied frames into an animated GIF (GIF has no alpha; the
+/// image crate quantizes each frame).
+pub fn export_gif(
+    frames: &[sk::Pixmap],
+    delays_ms: &[u32],
+) -> Result<Vec<u8>, image::ImageError> {
+    use image::{Delay, Frame};
+    let mut out = Vec::new();
+    let mut enc = image::codecs::gif::GifEncoder::new(&mut out);
+    for (i, pm) in frames.iter().enumerate() {
+        let img = unpremultiply(pm);
+        let delay = Delay::from_numer_denom_ms(delays_ms.get(i).copied().unwrap_or(100), 1);
+        enc.encode_frame(Frame::from_parts(img, 0, 0, delay))?;
+    }
+    drop(enc); // writes the GIF trailer
+    Ok(out)
+}
