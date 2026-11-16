@@ -59,7 +59,14 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
 - [x] File dialogs: Ctrl+O open / Ctrl+S save-as via rfd (xdg-portal only,
       no GTK). Picker runs on a background thread; save-as picks format by
       extension and rides the worker export path.
-- [ ] Layer list panel (visibility, reorder, opacity).
+- [x] Layer panel (dark): right sidebar, topmost first — click row selects,
+      ◉ toggles visibility, ▲▼ reorder, ✕ delete.
+- [x] Canvas frame: 1px theme-border quad outline around the canvas rect.
+- [x] Theme palette: all UI colors flow through `Theme`/`DARK` consts.
+- [x] Oversized imports stay movable: clamp range flips to [docw-w, 0] when
+      the layer is larger than the canvas (canvas stays covered).
+- [ ] Light theme (Theme::LIGHT + toggle).
+- [ ] Layer panel v2: opacity slider, drag-to-reorder, rename.
 - [ ] Spinner/progress overlay for multi-second ops (big GIF import,
       huge exports): compositing worker reports; UI shows indicator.
 - [ ] Windows support check (gpui-pre is cross-platform; CI later).

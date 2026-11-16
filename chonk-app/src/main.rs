@@ -5,10 +5,10 @@ use chonk_core::quote::{QuoteSpec, quote_document};
 use chonk_core::render::Renderer;
 use chonk_core::tiny_skia as sk;
 use gpui::{
-    App, AsyncApp, Bounds, Context, Corners, ElementInputHandler, EntityInputHandler,
+    App, AsyncApp, Bounds, ClickEvent, Context, Corners, ElementInputHandler, EntityInputHandler,
     ExternalPaths, FocusHandle, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, RenderImage, ScrollDelta, ScrollEvent, UTF16Selection, Window, WindowBounds,
-    WindowOptions, actions, canvas, div, fill, point, prelude::*, px, rgb, size,
+    MouseUpEvent, RenderImage, ScrollDelta, ScrollEvent, SharedString, UTF16Selection, Window,
+    WindowBounds, WindowOptions, actions, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
 use std::ops::Range;
@@ -47,6 +47,53 @@ const CHONK_CTX: &str = "chonk";
 /// Swapped in while editing a caption: printable keys must reach the input
 /// handler instead of firing app shortcuts.
 const CHONK_EDIT_CTX: &str = "chonk-edit";
+
+/// Layer panel width and the gap between canvas and panel (window px).
+const PANEL_W: f32 = 260.0;
+const GAP: f32 = 8.0;
+
+/// Minimal theme palette. Dark is the default; a light theme is planned —
+/// every color in the UI should come from here, not an inline rgb literal.
+struct Theme {
+    bg: u32,
+    panel: u32,
+    border: u32,
+    text: u32,
+    dim: u32,
+    accent: u32,
+    sel: u32,
+    danger: u32,
+}
+
+const DARK: Theme = Theme {
+    bg: 0x101014,
+    panel: 0x17171e,
+    border: 0x3a3a46,
+    text: 0xe8e8ee,
+    dim: 0x8f8f9c,
+    accent: 0x22d3ee,
+    sel: 0x23233a,
+    danger: 0xf87171,
+};
+
+/// Short human name for a layer row.
+fn layer_name(l: &chonk_core::document::Layer) -> String {
+    match &l.kind {
+        LayerKind::Text { text, .. } => {
+            let t: String = text.chars().take(18).collect();
+            if text.chars().count() > 18 {
+                format!("“{t}…”")
+            } else if t.is_empty() {
+                "(empty)".to_string()
+            } else {
+                format!("“{t}”")
+            }
+        }
+        LayerKind::Image { pixmap } => format!("image {}×{}", pixmap.width(), pixmap.height()),
+        LayerKind::AnimatedImage { image } => format!("gif {} frames", image.frame_count()),
+        LayerKind::Svg { .. } => "svg".to_string(),
+    }
+}
 
 struct MemeView {
     doc: Document,
@@ -415,16 +462,17 @@ impl MemeView {
         }
     }
 
-    /// Keep a layer from escaping the canvas: fully inside when it fits,
-    /// flush at the origin when it is larger than the document.
+    /// Keep a layer on the canvas: fully inside when it fits; when it is
+    /// larger than the document it can still slide, but the canvas must stay
+    /// covered by it (x in [docw - w, 0]).
     fn clamp_layer_pos(&mut self, i: usize) {
         let Some((w0, h0)) = self.layer_size(i) else { return };
         let (docw, doch) = (self.doc.width as f32, self.doc.height as f32);
         if let Some(l) = self.doc.layers.get_mut(i) {
             let s = l.transform.scale.max(0.01);
             let (w, h) = (w0 * s, h0 * s);
-            l.transform.x = if w >= docw { 0.0 } else { l.transform.x.clamp(0.0, docw - w) };
-            l.transform.y = if h >= doch { 0.0 } else { l.transform.y.clamp(0.0, doch - h) };
+            l.transform.x = l.transform.x.clamp((docw - w).min(0.0), (docw - w).max(0.0));
+            l.transform.y = l.transform.y.clamp((doch - h).min(0.0), (doch - h).max(0.0));
         }
     }
 
@@ -805,7 +853,7 @@ impl Render for MemeView {
             // Preview resolution: when the canvas displays smaller than the
             // document, composite at display size (dirty-region path is
             // full-res only). Mirror render()'s side math below.
-            let ew = _window.bounds().size.width / px(1.0) - 24.0;
+            let ew = _window.bounds().size.width / px(1.0) - 24.0 - GAP - PANEL_W;
             let eh = _window.bounds().size.height / px(1.0) - 24.0;
             let side = (ew.min(eh).max(1.0) * self.zoom).max(40.0);
             let scale = (side / self.doc.width as f32).min(1.0).max(0.05);
@@ -830,13 +878,15 @@ impl Render for MemeView {
         }
         let image = self.composited.clone();
         let b = _window.bounds();
+        let th = &DARK;
         if let Some(msg) = self.status.take() {
             _window.set_window_title(format!("Chonk — {msg}").as_str());
         }
-        // Canvas element sits inside p_3 padding (12px); the image is a
-        // centered square within it. Mirror the paint closure's math so
-        // mouse->doc mapping and hit-testing line up with what is drawn.
-        let ew = b.size.width / px(1.0) - 24.0;
+        // Canvas element sits inside p_3 padding (12px) and shares the row
+        // with the layer panel (PANEL_W + GAP). The image is a centered
+        // square within the remaining area. Mirror the paint closure's math
+        // so mouse->doc mapping and hit-testing line up with what is drawn.
+        let ew = b.size.width / px(1.0) - 24.0 - GAP - PANEL_W;
         let eh = b.size.height / px(1.0) - 24.0;
         let base = ew.min(eh).max(1.0);
         let side = (base * self.zoom).max(40.0);
@@ -937,12 +987,16 @@ impl Render for MemeView {
                 }
             }))
             .size_full()
-            .bg(rgb(0x101014))
+            .bg(rgb(th.bg))
             .p_3()
+            .flex()
+            .flex_row()
+            .gap_2()
             .child(
                 div()
                     .id("canvas")
-                    .size_full()
+                    .flex_1()
+                    .h_full()
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
                         let (dx, dy) = this.to_doc(ev.position.x / px(1.0), ev.position.y / px(1.0));
@@ -1036,8 +1090,10 @@ impl Render for MemeView {
                                 if let Some(l) = this.doc.layers.get_mut(layer) {
                                     scale = l.transform.scale.max(0.01);
                                     let (w, h) = (w0 * scale, h0 * scale);
-                                    l.transform.x = if w >= docw { 0.0 } else { l.transform.x.clamp(0.0, docw - w) };
-                                    l.transform.y = if h >= doch { 0.0 } else { l.transform.y.clamp(0.0, doch - h) };
+                                    l.transform.x = l.transform.x
+                                        .clamp((docw - w).min(0.0), (docw - w).max(0.0));
+                                    l.transform.y = l.transform.y
+                                        .clamp((doch - h).min(0.0), (doch - h).max(0.0));
                                     newxy = (l.transform.x, l.transform.y);
                                 }
                                 let (newx, newy) = newxy;
@@ -1083,6 +1139,8 @@ impl Render for MemeView {
                             let view = cx.entity().clone();
                             let fh = self.focus_handle.clone();
                             let editing = self.edit_mode;
+                            let border = th.border;
+                            let accent = th.accent;
                             move |bounds, _bounds, window, cx| {
                                 // Route typed characters (IME included) to the
                                 // view's EntityInputHandler while focused.
@@ -1099,6 +1157,13 @@ impl Render for MemeView {
                                     .paint_image(target, target, Corners::default(), img.clone(), 0, false)
                                     .ok();
                             }
+                            // Frame around the canvas.
+                            let bt = px(1.0);
+                            let bc = rgb(border);
+                            window.paint_quad(fill(Bounds { origin: point(origin.x - bt, origin.y - bt), size: size(side + bt + bt, bt) }, bc));
+                            window.paint_quad(fill(Bounds { origin: point(origin.x - bt, origin.y + side), size: size(side + bt + bt, bt) }, bc));
+                            window.paint_quad(fill(Bounds { origin: point(origin.x - bt, origin.y), size: size(bt, side) }, bc));
+                            window.paint_quad(fill(Bounds { origin: point(origin.x + side, origin.y), size: size(bt, side) }, bc));
                             // Selection outline: four 2px quads in canvas space.
                             if let Some((rx, ry, rw, rh)) = sel_rect {
                                 let k = side / px(1080.0); // doc px -> window px (f32 ratio)
@@ -1107,7 +1172,7 @@ impl Render for MemeView {
                                 let w = px(rw * k);
                                 let h = px(rh * k);
                                 let t = px(2.0);
-                                let c = rgb(0x22d3ee);
+                                let c = rgb(accent);
                                 window.paint_quad(fill(Bounds { origin: point(x0 - t, y0 - t), size: size(w + t + t, t) }, c));
                                 window.paint_quad(fill(Bounds { origin: point(x0 - t, y0 + h), size: size(w + t + t, t) }, c));
                                 window.paint_quad(fill(Bounds { origin: point(x0 - t, y0), size: size(t, h) }, c));
@@ -1124,6 +1189,118 @@ impl Render for MemeView {
                         },
                     ).size_full()),
             )
+            .child(self.layer_panel(cx))
+    }
+}
+
+impl MemeView {
+    /// Right-hand layer list: topmost layer first. Click row = select;
+    /// eye = visibility; ▲/▼ = reorder; ✕ = delete.
+    fn layer_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let th = &DARK;
+        let mut panel = div()
+            .id("layer-panel")
+            .flex_none()
+            .w(px(PANEL_W))
+            .h_full()
+            .overflow_y_scroll()
+            .bg(rgb(th.panel))
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(12.0))
+                    .text_color(rgb(th.dim))
+                    .child("LAYERS (top first)"),
+            );
+        for i in (0..self.doc.layers.len()).rev() {
+            let l = &self.doc.layers[i];
+            let selected = self.selected == Some(i);
+            let row = div()
+                .id(SharedString::from(format!("lyr{i}")))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_1()
+                .text_size(px(13.0))
+                .text_color(if l.visible { rgb(th.text) } else { rgb(th.dim) })
+                .bg(if selected { rgb(th.sel) } else { rgb(th.panel) })
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.selected = Some(i);
+                    this.edit_mode = false;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("eye{i}")))
+                        .cursor_pointer()
+                        .text_color(rgb(if l.visible { th.text } else { th.dim }))
+                        .child(if l.visible { "◉" } else { "◎" })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if let Some(l) = this.doc.layers.get_mut(i) {
+                                l.visible = !l.visible;
+                                this.invalidate();
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(div().flex_1().child(layer_name(l)))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("up{i}")))
+                        .cursor_pointer()
+                        .text_color(rgb(th.dim))
+                        .child("▲")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.move_layer(i, 1);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("dn{i}")))
+                        .cursor_pointer()
+                        .text_color(rgb(th.dim))
+                        .child("▼")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.move_layer(i, -1);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("del{i}")))
+                        .cursor_pointer()
+                        .text_color(rgb(th.danger))
+                        .child("✕")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if i < this.doc.layers.len() {
+                                this.doc.layers.remove(i);
+                                this.selected = None;
+                                this.edit_mode = false;
+                                this.invalidate();
+                            }
+                            cx.notify();
+                        })),
+                );
+            panel = panel.child(row);
+        }
+        panel
+    }
+
+    /// Swap a layer with its neighbor (dir=1 moves it up the stack).
+    fn move_layer(&mut self, i: usize, dir: i32) {
+        let n = self.doc.layers.len();
+        let j = if dir > 0 { i + 1 } else { match i.checked_sub(1) { Some(j) => j, None => return } };
+        if j >= n {
+            return;
+        }
+        self.doc.layers.swap(i, j);
+        self.selected = Some(j);
+        self.invalidate();
     }
 }
 
