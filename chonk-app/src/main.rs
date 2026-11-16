@@ -5,9 +5,9 @@ use chonk_core::quote::{QuoteSpec, quote_document};
 use chonk_core::render::Renderer;
 use chonk_core::tiny_skia as sk;
 use gpui::{
-    App, AsyncApp, Bounds, Context, Corners, FocusHandle, KeyBinding, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, RenderImage, Window, WindowBounds, WindowOptions, actions,
-    canvas, div, fill, point, prelude::*, px, rgb, size,
+    App, AsyncApp, Bounds, Context, Corners, ExternalPaths, FocusHandle, KeyBinding, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, RenderImage, Window, WindowBounds, WindowOptions,
+    actions, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
 use std::sync::Arc;
@@ -33,18 +33,23 @@ const CHONK_CTX: &str = "chonk";
 
 struct MemeView {
     doc: Document,
+    /// UI-thread renderer, used ONLY for layer sizes (hit-testing/outline);
+    /// all rasterization happens on the render worker.
     renderer: Renderer,
     composited: Option<Arc<RenderImage>>,
-    /// Last full composite; drag frames patch a copy of this instead of
-    /// recompositing the whole canvas.
-    last_pm: Option<sk::Pixmap>,
+    job_tx: std::sync::mpsc::Sender<RenderJob>,
+    result_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<(u64, sk::Pixmap)>>>,
+    seq: u64,
+    applied_seq: u64,
+    in_flight: bool,
     selected: Option<usize>,
     /// (layer index, last mouse x, last mouse y) in window pixels.
     drag: Option<(usize, f32, f32)>,
-    /// Set by any mutation; render() composites at most once per frame
+    /// Set by any mutation; render() sends at most one job per frame
     /// (mouse-move events fire far faster than frames).
     dirty: bool,
-    /// Union of dirty document rects this frame (drag path), or None = full.
+    /// Union of dirty document rects since the last job (drag path),
+    /// or None = full canvas.
     dirty_region: Option<(f32, f32, f32, f32)>,
     /// Size of the square canvas viewport in window pixels + its origin
     /// (set each render), used to map mouse coords into document space.
@@ -54,6 +59,87 @@ struct MemeView {
     playing: bool,
     frame: usize,
     focus_handle: FocusHandle,
+}
+
+/// Load an image/gif/svg file into the document as a new top layer.
+fn load_path(doc: &mut Document, path: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "gif" => {
+            let anim = chonk_core::codecs::load_gif(&bytes).map_err(|e| e.to_string())?;
+            doc.add_animated(anim);
+        }
+        "svg" => {
+            let tree = chonk_core::svg::parse(&bytes).map_err(|e| e.to_string())?;
+            doc.add_svg(tree);
+        }
+        _ => {
+            let pm = chonk_core::codecs::load_image(&bytes).map_err(|e| e.to_string())?;
+            doc.add_image(pm);
+        }
+    }
+    Ok(())
+}
+
+/// A compositing request for the background render worker.
+struct RenderJob {
+    seq: u64,
+    doc: Document,
+    frame: usize,
+    /// Document-space rect to patch, or None = full canvas.
+    region: Option<(f32, f32, f32, f32)>,
+}
+
+/// Worker thread owning the Renderer (and its caches) plus the last full
+/// canvas; region jobs patch its copy. The UI thread never rasterizes.
+fn spawn_render_worker() -> (
+    std::sync::mpsc::Sender<RenderJob>,
+    std::sync::mpsc::Receiver<(u64, sk::Pixmap)>,
+) {
+    let (jt, jr) = std::sync::mpsc::channel::<RenderJob>();
+    let (rt, rr) = std::sync::mpsc::channel::<(u64, sk::Pixmap)>();
+    std::thread::spawn(move || {
+        let mut renderer = Renderer::new();
+        let mut canvas: Option<sk::Pixmap> = None;
+        let mut last_seq: u64 = 0;
+        while let Ok(mut job) = jr.recv() {
+            // Coalesce queued jobs into one (newest doc/frame, union region).
+            while let Ok(j2) = jr.try_recv() {
+                job.region = match (job.region, j2.region) {
+                    (Some((a0, b0, a1, b1)), Some((c0, d0, c1, d1))) => {
+                        Some((a0.min(c0), b0.min(d0), a1.max(c1), b1.max(d1)))
+                    }
+                    (None, _) | (_, None) => None,
+                };
+                job.doc = j2.doc;
+                job.frame = j2.frame;
+                job.seq = j2.seq;
+            }
+            if job.seq <= last_seq {
+                continue;
+            }
+            last_seq = job.seq;
+            let pm = match (job.region, canvas.as_ref()) {
+                (Some((x0, y0, x1, y1)), Some(base)) => {
+                    let x = x0.max(0.0).floor() as u32;
+                    let y = y0.max(0.0).floor() as u32;
+                    let w = (x1.floor().max(x as f32 + 1.0)) as u32 - x;
+                    let h = (y1.floor().max(y as f32 + 1.0)) as u32 - y;
+                    let mut c = base.clone();
+                    let region = renderer.render_region_at(&job.doc, x, y, w, h, job.frame);
+                    Renderer::overlay_region(&mut c, &region, x, y);
+                    c
+                }
+                _ => renderer.composite_at(&job.doc, job.frame),
+            };
+            canvas = Some(pm.clone());
+            if rt.send((job.seq, pm)).is_err() {
+                break; // view gone
+            }
+        }
+    });
+    (jt, rr)
 }
 
 /// Untransformed layer size in document pixels (free fn so event handlers
@@ -79,11 +165,16 @@ fn layer_size_of(doc: &Document, renderer: &mut Renderer, i: usize) -> Option<(f
 
 impl MemeView {
     fn new(cx: &mut Context<Self>) -> Self {
+        let (job_tx, rr) = spawn_render_worker();
         let mut v = Self {
             doc: Self::meme_doc(),
             renderer: Renderer::new(),
             composited: None,
-            last_pm: None,
+            job_tx,
+            result_rx: Arc::new(std::sync::Mutex::new(rr)),
+            seq: 0,
+            applied_seq: 0,
+            in_flight: false,
             selected: None,
             drag: None,
             dirty: false,
@@ -96,7 +187,38 @@ impl MemeView {
             focus_handle: cx.focus_handle(),
         };
         v.recomposite();
+        // Result pump: block on the worker's channel off the UI thread,
+        // apply finished frames back on it.
+        let rx = v.result_rx.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            loop {
+                let got = {
+                    let rx = rx.clone();
+                    cx.background_executor()
+                        .spawn(async move { rx.lock().unwrap().recv() })
+                        .await
+                };
+                match got {
+                    Ok((seq, pm)) => {
+                        let _ = this.update(cx, |v, cx| v.apply_frame(seq, pm, cx));
+                    }
+                    Err(_) => break, // view dropped
+                }
+            }
+        })
+        .detach();
         v
+    }
+
+    fn apply_frame(&mut self, seq: u64, pm: sk::Pixmap, cx: &mut Context<Self>) {
+        if seq < self.applied_seq {
+            return; // stale
+        }
+        self.applied_seq = seq;
+        self.in_flight = false;
+        self.composited = Some(Arc::new(render_image_from_pixmap(&pm)));
+        // If more happened while the job ran, render() sends the next job.
+        cx.notify();
     }
 
     fn meme_doc() -> Document {
@@ -316,26 +438,21 @@ fn render_image_from_pixmap(pm: &sk::Pixmap) -> RenderImage {
 
 impl Render for MemeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Composite at most once per frame, regardless of how many events
-        // dirtied the document (mouse-move floods are the common case).
-        if self.dirty {
+        // Send at most one composite job per frame to the render worker;
+        // rasterization never happens on the UI thread.
+        if self.dirty && !self.in_flight {
             let frame = if self.playing { self.frame } else { 0 };
-            let pm = match self.dirty_region.take() {
-                Some((x0, y0, x1, y1)) if self.last_pm.is_some() => {
-                    let x = x0.max(0.0).floor() as u32;
-                    let y = y0.max(0.0).floor() as u32;
-                    let w = (x1.floor().max(x as f32 + 1.0)) as u32 - x;
-                    let h = (y1.floor().max(y as f32 + 1.0)) as u32 - y;
-                    let mut canvas = self.last_pm.as_ref().unwrap().clone();
-                    let region = self.renderer.render_region_at(&self.doc, x, y, w, h, frame);
-                    Renderer::overlay_region(&mut canvas, &region, x, y);
-                    canvas
-                }
-                _ => self.renderer.composite_at(&self.doc, frame),
+            self.seq += 1;
+            let job = RenderJob {
+                seq: self.seq,
+                doc: self.doc.clone(),
+                frame,
+                region: self.dirty_region.take(),
             };
-            self.composited = Some(Arc::new(render_image_from_pixmap(&pm)));
-            self.last_pm = Some(pm);
-            self.dirty = false;
+            if self.job_tx.send(job).is_ok() {
+                self.in_flight = true;
+                self.dirty = false;
+            }
         }
         let image = self.composited.clone();
         let b = _window.bounds();
@@ -457,6 +574,20 @@ impl Render for MemeView {
                     .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, _| {
                         this.drag = None;
                     }))
+                    // Wayland/X11 file drops (gpui turns them into a drag
+                    // session carrying ExternalPaths).
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                        for p in paths.paths() {
+                            match load_path(&mut this.doc, &p.to_string_lossy()) {
+                                Ok(()) => {
+                                    this.selected = Some(this.doc.layers.len() - 1);
+                                }
+                                Err(e) => eprintln!("chonk: {e}"),
+                            }
+                        }
+                        this.invalidate();
+                        cx.notify();
+                    }))
                     .child(canvas(
                         |bounds, _window, _cx| bounds,
                         move |bounds, _bounds, window, _cx| {
@@ -511,33 +642,14 @@ fn main() {
             .unwrap();
         // Optional file argument: chonk-app image.png|photo.jpg|anim.gif|art.svg
         if let Some(path) = std::env::args().nth(1) {
-            let bytes = match std::fs::read(&path) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("chonk: cannot read {path}: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
             let label = path.clone();
             view.update(cx, |v, _window, _cx| {
-                let loaded: Result<(), String> = match ext.as_str() {
-                    "gif" => chonk_core::codecs::load_gif(&bytes)
-                        .map(|anim| { v.doc.add_animated(anim); })
-                        .map_err(|e| e.to_string()),
-                    "svg" => chonk_core::svg::parse(&bytes)
-                        .map(|tree| { v.doc.add_svg(tree); })
-                        .map_err(|e| e.to_string()),
-                    _ => chonk_core::codecs::load_image(&bytes)
-                        .map(|pm| { v.doc.add_image(pm); })
-                        .map_err(|e| e.to_string()),
-                };
-                match loaded {
-                    Ok(_) => {
+                match load_path(&mut v.doc, &path) {
+                    Ok(()) => {
                         v.selected = Some(v.doc.layers.len() - 1);
                         v.recomposite();
                     }
-                    Err(e) => eprintln!("chonk: cannot load {path}: {e}"),
+                    Err(e) => eprintln!("chonk: {e}"),
                 }
             });
             view.update(cx, |_v, window, _cx| {

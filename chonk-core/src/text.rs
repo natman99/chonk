@@ -7,6 +7,18 @@ use tiny_skia as sk;
 
 use crate::document::{Shadow, TextAlign, TextStyle};
 
+/// Font files shipped with the app (SIL OFL 1.1 — see fonts/LICENSES.md).
+pub const BUNDLED_FONTS: &[&[u8]] = &[
+    include_bytes!("../fonts/Anton-Regular.ttf"),
+    include_bytes!("../fonts/ArchivoBlack-Regular.ttf"),
+    include_bytes!("../fonts/NotoSans-Regular.ttf"),
+    include_bytes!("../fonts/NotoSans-Bold.ttf"),
+    include_bytes!("../fonts/NotoSerif-Regular.ttf"),
+    include_bytes!("../fonts/NotoSerif-Bold.ttf"),
+    include_bytes!("../fonts/SpaceMono-Regular.ttf"),
+    include_bytes!("../fonts/SpaceMono-Bold.ttf"),
+];
+
 pub struct TextEngine {
     font_system: FontSystem,
     scale: swash::scale::ScaleContext,
@@ -30,10 +42,26 @@ impl Default for TextEngine {
 impl TextEngine {
     pub fn new() -> Self {
         Self {
-            font_system: FontSystem::new(),
+            font_system: Self::bundled_font_system(),
             scale: swash::scale::ScaleContext::new(),
             cache: HashMap::new(),
         }
+    }
+
+    /// Bundled fonts (all SIL OFL 1.1, in `fonts/`) load first so they are
+    /// always available regardless of the host system; system fonts follow.
+    fn bundled_font_system() -> FontSystem {
+        let mut db = cosmic_text::fontdb::Database::new();
+        for bytes in BUNDLED_FONTS {
+            db.load_font_data(bytes.to_vec());
+        }
+        db.load_system_fonts();
+        FontSystem::new_with_locale_and_db(String::new(), db)
+    }
+
+    /// Family names of the bundled set (for a font picker).
+    pub fn bundled_families() -> &'static [&'static str] {
+        &["Anton", "Archivo Black", "Noto Sans", "Noto Serif", "Space Mono"]
     }
 
     pub fn font_system(&self) -> &FontSystem {
