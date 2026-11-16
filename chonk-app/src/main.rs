@@ -5,14 +5,18 @@ use chonk_core::quote::{QuoteSpec, quote_document};
 use chonk_core::render::Renderer;
 use chonk_core::tiny_skia as sk;
 use gpui::{
-    App, Bounds, Context, Corners, KeyBinding, MouseDownEvent, MouseButton, MouseMoveEvent,
-    MouseUpEvent, RenderImage, Window, WindowBounds, WindowOptions, actions, canvas, div, point,
-    prelude::*, px, rgb, size,
+    App, Bounds, Context, Corners, FocusHandle, KeyBinding, MouseDownEvent, MouseButton,
+    MouseMoveEvent, MouseUpEvent, RenderImage, Window, WindowBounds, WindowOptions, actions,
+    canvas, div, point, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
 use std::sync::Arc;
 
 actions!(chonk, [ToggleQuote]);
+
+/// Key context this view installs while focused (Shale's pattern: bindings
+/// are scoped to a focused, tracked view — not dispatched globally).
+const CHONK_CTX: &str = "chonk";
 
 struct MemeView {
     doc: Document,
@@ -23,10 +27,11 @@ struct MemeView {
     /// Size of the square canvas viewport in window pixels (set each render).
     view_side: f32,
     quote_mode: bool,
+    focus_handle: FocusHandle,
 }
 
 impl MemeView {
-    fn new() -> Self {
+    fn new(cx: &mut Context<Self>) -> Self {
         let mut v = Self {
             doc: Self::meme_doc(),
             renderer: Renderer::new(),
@@ -34,6 +39,7 @@ impl MemeView {
             drag: None,
             view_side: 0.0,
             quote_mode: false,
+            focus_handle: cx.focus_handle(),
         };
         v.recomposite();
         v
@@ -133,6 +139,14 @@ impl Render for MemeView {
         self.view_side = side;
 
         div()
+            .id("chonk-root")
+            .key_context(CHONK_CTX)
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
+                this.toggle_quote();
+                eprintln!("[chonk] ToggleQuote fired; quote_mode={}", this.quote_mode);
+                cx.notify();
+            }))
             .size_full()
             .bg(rgb(0x101014))
             .p_3()
@@ -140,7 +154,8 @@ impl Render for MemeView {
                 div()
                     .id("canvas")
                     .size_full()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                        window.focus(&this.focus_handle, cx);
                         this.drag = Some((0, ev.position.x / px(1.0), ev.position.y / px(1.0)));
                     }))
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
@@ -196,31 +211,13 @@ fn main() {
                 },
                 |window, cx| {
                     window.set_window_title("Chonk — press Q for quote card".into());
-                    cx.new(|_cx| MemeView::new())
+                    cx.new(MemeView::new)
                 },
             )
             .unwrap();
-        cx.on_action({
-            let view = view.clone();
-            move |_: &ToggleQuote, cx: &mut App| {
-                view.update(cx, |v, _window, cx| {
-                    v.toggle_quote();
-                    eprintln!(
-                        "[chonk] ToggleQuote fired; quote_mode={}",
-                        v.quote_mode
-                    );
-                    cx.notify();
-                });
-            }
-        });
-        cx.bind_keys([KeyBinding::new("q", ToggleQuote, None)]);
-        // TEMP DEBUG: log every keystroke GPUI receives.
-        cx.observe_keystrokes(|ev, _window, _cx| {
-            eprintln!(
-                "[chonk] keystroke key={:?} key_char={:?}",
-                ev.keystroke.key, ev.keystroke.key_char
-            );
-        });
+        cx.bind_keys([KeyBinding::new("q", ToggleQuote, Some(CHONK_CTX))]);
+        // Focus the view so its key context is live from the first frame.
+        view.update(cx, |v, window, cx| window.focus(&v.focus_handle, cx)).ok();
         cx.activate(true);
     });
 }
