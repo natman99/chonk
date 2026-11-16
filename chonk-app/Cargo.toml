@@ -8,4 +8,5 @@ chonk-core = { path = "../chonk-core" }
 gpui-pre = "0.3.10"
 gpui-pre-platform = { version = "0.3.10", features = ["wayland", "x11"] }
 image.workspace = true
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 smallvec = "1"

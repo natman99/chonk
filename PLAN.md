@@ -56,7 +56,9 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
 - [x] Downsampled preview: zoomed-out canvases composite at display
       resolution (Renderer::composite_scaled; bg cached at preview size,
       layer blits carry the global scale). Exports always force full res.
-- [ ] File open dialog (rfd or portal) once DnD verdict is in.
+- [x] File dialogs: Ctrl+O open / Ctrl+S save-as via rfd (xdg-portal only,
+      no GTK). Picker runs on a background thread; save-as picks format by
+      extension and rides the worker export path.
 - [ ] Layer list panel (visibility, reorder, opacity).
 - [ ] Spinner/progress overlay for multi-second ops (big GIF import,
       huge exports): compositing worker reports; UI shows indicator.

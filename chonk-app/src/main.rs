@@ -35,7 +35,9 @@ actions!(
         ExportGif,
         ResetView,
         ZoomIn,
-        ZoomOut
+        ZoomOut,
+        OpenFile,
+        SaveAs
     ]
 );
 
@@ -579,6 +581,13 @@ impl MemeView {
             .unwrap_or_else(|_| ".".to_string());
         std::fs::create_dir_all(&dir).ok();
         let path = format!("{dir}/chonk-{ts}.{fmt}");
+        self.export_to(std::path::Path::new(&path), fmt);
+        window.set_window_title(format!("Chonk — exporting {path}…").as_str());
+    }
+
+    /// Export to an explicit path (dialog save-as). Format from the caller.
+    fn export_to(&mut self, path: &std::path::Path, fmt: &str) {
+        let path = path.display().to_string();
         self.seq += 1;
         let frame = if self.playing { self.frame } else { 0 };
         let job = RenderJob {
@@ -590,8 +599,73 @@ impl MemeView {
             scale: 1.0,
         };
         if self.job_tx.send(job).is_ok() {
-            window.set_window_title(format!("Chonk — exporting {path}…").as_str());
+            self.status = Some(format!("exporting {path}…"));
         }
+    }
+
+    /// Portal file dialogs (rfd/xdg-portal): run on a background thread so
+    /// the UI never blocks while the picker is open.
+    fn open_dialog(&mut self, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        cx.spawn(async move |_this, cx: &mut AsyncApp| {
+            let picked = cx.background_executor()
+                .spawn(async {
+                    rfd::FileDialog::new()
+                        .set_title("Chonk — open image")
+                        .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp"])
+                        .pick_file()
+                })
+                .await;
+            let Some(p) = picked else { return };
+            let _ = me.update(cx, |v, cx| {
+                match load_path(&mut v.doc, &p.to_string_lossy()) {
+                    Ok(()) => {
+                        v.selected = Some(v.doc.layers.len() - 1);
+                        v.recomposite();
+                        v.status = Some(format!("opened {}", p.display()));
+                    }
+                    Err(e) => v.status = Some(format!("open failed: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn save_dialog(&mut self, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        cx.spawn(async move |_this, cx: &mut AsyncApp| {
+            let picked = cx.background_executor()
+                .spawn(async {
+                    rfd::FileDialog::new()
+                        .set_title("Chonk — save as")
+                        .set_file_name("chonk.png")
+                        .add_filter("PNG", &["png"])
+                        .add_filter("JPEG", &["jpg", "jpeg"])
+                        .add_filter("WebP", &["webp"])
+                        .add_filter("GIF (animated)", &["gif"])
+                        .save_file()
+                })
+                .await;
+            let Some(p) = picked else { return };
+            let fmt = match p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("png")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "jpg" | "jpeg" => "jpg",
+                "webp" => "webp",
+                "gif" => "gif",
+                _ => "png",
+            };
+            let _ = me.update(cx, |v, cx| {
+                v.export_to(&p, fmt);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn delete_char(&mut self) {
@@ -816,6 +890,8 @@ impl Render for MemeView {
                 this.zoom_at_center(0.8);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &OpenFile, _window, cx| this.open_dialog(cx)))
+            .on_action(cx.listener(|this, _: &SaveAs, _window, cx| this.save_dialog(cx)))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -1101,6 +1177,8 @@ fn main() {
             KeyBinding::new("w", ExportWebp, Some(CHONK_CTX)),
             KeyBinding::new("g", ExportGif, Some(CHONK_CTX)),
             KeyBinding::new("0", ResetView, Some(CHONK_CTX)),
+            KeyBinding::new("ctrl-o", OpenFile, Some(CHONK_CTX)),
+            KeyBinding::new("ctrl-s", SaveAs, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they
