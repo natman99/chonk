@@ -35,11 +35,19 @@ struct MemeView {
     doc: Document,
     renderer: Renderer,
     composited: Option<Arc<RenderImage>>,
+    /// Last full composite; drag frames patch a copy of this instead of
+    /// recompositing the whole canvas.
+    last_pm: Option<sk::Pixmap>,
     selected: Option<usize>,
     /// (layer index, last mouse x, last mouse y) in window pixels.
     drag: Option<(usize, f32, f32)>,
-    /// Square canvas viewport in window pixels + its origin (set each render),
-    /// used to map mouse coords into document space.
+    /// Set by any mutation; render() composites at most once per frame
+    /// (mouse-move events fire far faster than frames).
+    dirty: bool,
+    /// Union of dirty document rects this frame (drag path), or None = full.
+    dirty_region: Option<(f32, f32, f32, f32)>,
+    /// Size of the square canvas viewport in window pixels + its origin
+    /// (set each render), used to map mouse coords into document space.
     view_side: f32,
     view_origin: (f32, f32),
     quote_mode: bool,
@@ -48,14 +56,38 @@ struct MemeView {
     focus_handle: FocusHandle,
 }
 
+/// Untransformed layer size in document pixels (free fn so event handlers
+/// can borrow doc and renderer disjointly).
+fn layer_size_of(doc: &Document, renderer: &mut Renderer, i: usize) -> Option<(f32, f32)> {
+    let layer = doc.layers.get(i)?;
+    Some(match &layer.kind {
+        LayerKind::Image { pixmap } => (pixmap.width() as f32, pixmap.height() as f32),
+        LayerKind::AnimatedImage { image } => {
+            let f = image.frame(0);
+            (f.width() as f32, f.height() as f32)
+        }
+        LayerKind::Svg { tree } => {
+            let pm = chonk_core::svg::render(tree);
+            (pm.width() as f32, pm.height() as f32)
+        }
+        LayerKind::Text { text, style } => {
+            let rt = renderer.text.render(text, style)?;
+            (rt.pixmap.width() as f32, rt.pixmap.height() as f32)
+        }
+    })
+}
+
 impl MemeView {
     fn new(cx: &mut Context<Self>) -> Self {
         let mut v = Self {
             doc: Self::meme_doc(),
             renderer: Renderer::new(),
             composited: None,
+            last_pm: None,
             selected: None,
             drag: None,
+            dirty: false,
+            dirty_region: None,
             view_side: 0.0,
             view_origin: (0.0, 0.0),
             quote_mode: false,
@@ -174,23 +206,7 @@ impl MemeView {
     /// Untransformed layer size in document pixels (text uses the render
     /// cache, so this is cheap for unchanged layers).
     fn layer_size(&mut self, i: usize) -> Option<(f32, f32)> {
-        let layer = self.doc.layers.get(i)?;
-        let dims = match &layer.kind {
-            LayerKind::Image { pixmap } => (pixmap.width() as f32, pixmap.height() as f32),
-            LayerKind::AnimatedImage { image } => {
-                let f = image.frame(0);
-                (f.width() as f32, f.height() as f32)
-            }
-            LayerKind::Svg { tree } => {
-                let pm = chonk_core::svg::render(tree);
-                (pm.width() as f32, pm.height() as f32)
-            }
-            LayerKind::Text { text, style } => {
-                let rt = self.renderer.text.render(text, style)?;
-                (rt.pixmap.width() as f32, rt.pixmap.height() as f32)
-            }
-        };
-        Some(dims)
+        layer_size_of(&self.doc, &mut self.renderer, i)
     }
 
     /// Topmost visible layer whose (scaled) box contains the document point.
@@ -263,10 +279,28 @@ impl MemeView {
         .detach();
     }
 
+    /// Full recomposite requested; actual work happens once in render().
+    fn invalidate(&mut self) {
+        self.dirty = true;
+        self.dirty_region = None;
+    }
+
+    /// Mark a document-space rect dirty (union-accumulated until the frame).
+    fn invalidate_region(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        self.dirty = true;
+        match &mut self.dirty_region {
+            Some((ax0, ay0, ax1, ay1)) => {
+                *ax0 = ax0.min(x0);
+                *ay0 = ay0.min(y0);
+                *ax1 = ax1.max(x1);
+                *ay1 = ay1.max(y1);
+            }
+            None => self.dirty_region = Some((x0, y0, x1, y1)),
+        }
+    }
+
     fn recomposite(&mut self) {
-        let frame = if self.playing { self.frame } else { 0 };
-        let pm = self.renderer.composite_at(&self.doc, frame);
-        self.composited = Some(Arc::new(render_image_from_pixmap(&pm)));
+        self.invalidate();
     }
 }
 
@@ -282,6 +316,27 @@ fn render_image_from_pixmap(pm: &sk::Pixmap) -> RenderImage {
 
 impl Render for MemeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Composite at most once per frame, regardless of how many events
+        // dirtied the document (mouse-move floods are the common case).
+        if self.dirty {
+            let frame = if self.playing { self.frame } else { 0 };
+            let pm = match self.dirty_region.take() {
+                Some((x0, y0, x1, y1)) if self.last_pm.is_some() => {
+                    let x = x0.max(0.0).floor() as u32;
+                    let y = y0.max(0.0).floor() as u32;
+                    let w = (x1.floor().max(x as f32 + 1.0)) as u32 - x;
+                    let h = (y1.floor().max(y as f32 + 1.0)) as u32 - y;
+                    let mut canvas = self.last_pm.as_ref().unwrap().clone();
+                    let region = self.renderer.render_region_at(&self.doc, x, y, w, h, frame);
+                    Renderer::overlay_region(&mut canvas, &region, x, y);
+                    canvas
+                }
+                _ => self.renderer.composite_at(&self.doc, frame),
+            };
+            self.composited = Some(Arc::new(render_image_from_pixmap(&pm)));
+            self.last_pm = Some(pm);
+            self.dirty = false;
+        }
         let image = self.composited.clone();
         let b = _window.bounds();
         // Canvas element sits inside p_3 padding (12px); the image is a
@@ -368,11 +423,32 @@ impl Render for MemeView {
                     }))
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                         if let Some((layer, lx, ly)) = this.drag.take() {
+                            let mut region_ok = false;
+                            let mut rect = (0.0, 0.0, 0.0, 0.0);
                             if let Some(l) = this.doc.layers.get_mut(layer) {
                                 let s = this.doc.width as f32 / this.view_side.max(1.0);
+                                let scale = l.transform.scale.max(0.01);
+                                let (oldx, oldy) = (l.transform.x, l.transform.y);
                                 l.transform.x += (ev.position.x / px(1.0) - lx) * s;
                                 l.transform.y += (ev.position.y / px(1.0) - ly) * s;
-                                this.recomposite();
+                                let (newx, newy) = (l.transform.x, l.transform.y);
+                                // Dirty region = union of old+new layer bbox;
+                                // the composite itself waits for render().
+                                if let Some((w0, h0)) = layer_size_of(&this.doc, &mut this.renderer, layer) {
+                                    let (w, h) = (w0 * scale, h0 * scale);
+                                    rect = (
+                                        oldx.min(newx) - 2.0,
+                                        oldy.min(newy) - 2.0,
+                                        oldx.max(newx) + w + 2.0,
+                                        oldy.max(newy) + h + 2.0,
+                                    );
+                                    region_ok = true;
+                                }
+                            }
+                            if region_ok {
+                                this.invalidate_region(rect.0, rect.1, rect.2, rect.3);
+                            } else {
+                                this.invalidate();
                             }
                             this.drag = Some((layer, ev.position.x / px(1.0), ev.position.y / px(1.0)));
                             cx.notify();
