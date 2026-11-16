@@ -203,6 +203,7 @@ fn main() {
         cx.on_action({
             let view = view.clone();
             move |_: &ToggleQuote, cx: &mut App| {
+                eprintln!("[chonk] ToggleQuote action fired");
                 view.update(cx, |v, _window, cx| {
                     v.toggle_quote();
                     cx.notify();
