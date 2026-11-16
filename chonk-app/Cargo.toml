@@ -1,0 +1,11 @@
+[package]
+name = "chonk-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chonk-core = { path = "../chonk-core" }
+gpui-pre = "0.3.10"
+gpui-pre-platform = { version = "0.3.10", features = ["wayland", "x11"] }
+image.workspace = true
+smallvec = "1"

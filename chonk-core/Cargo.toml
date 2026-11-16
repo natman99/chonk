@@ -1,0 +1,15 @@
+[package]
+name = "chonk-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tiny-skia.workspace = true
+resvg.workspace = true
+usvg.workspace = true
+fontdb.workspace = true
+cosmic-text.workspace = true
+swash.workspace = true
+image.workspace = true
+imageproc.workspace = true
+image-webp = "0.2"
