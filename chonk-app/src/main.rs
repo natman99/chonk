@@ -387,8 +387,22 @@ impl MemeView {
             if let Some(l) = self.doc.layers.get_mut(i) {
                 l.transform.x += dx;
                 l.transform.y += dy;
-                self.recomposite();
             }
+            self.clamp_layer_pos(i);
+            self.recomposite();
+        }
+    }
+
+    /// Keep a layer from escaping the canvas: fully inside when it fits,
+    /// flush at the origin when it is larger than the document.
+    fn clamp_layer_pos(&mut self, i: usize) {
+        let Some((w0, h0)) = self.layer_size(i) else { return };
+        let (docw, doch) = (self.doc.width as f32, self.doc.height as f32);
+        if let Some(l) = self.doc.layers.get_mut(i) {
+            let s = l.transform.scale.max(0.01);
+            let (w, h) = (w0 * s, h0 * s);
+            l.transform.x = if w >= docw { 0.0 } else { l.transform.x.clamp(0.0, docw - w) };
+            l.transform.y = if h >= doch { 0.0 } else { l.transform.y.clamp(0.0, doch - h) };
         }
     }
 
@@ -504,8 +518,11 @@ impl MemeView {
         }
     }
 
-    /// Zoom by `factor`, anchored at the canvas center (keyboard zoom).
-    fn zoom_at_center(&mut self, factor: f32) {
+    /// Zoom by an adaptive factor (gentler at high magnification),
+    /// anchored at the canvas center (keyboard zoom).
+    fn zoom_at_center(&mut self, base: f32) {
+        let speed = 0.22f32.ln() / (1.0 + (self.zoom - 1.0).max(0.0) * 0.35);
+        let factor = if base > 1.0 { speed.exp() } else { (-speed).exp() };
         let new_zoom = (self.zoom * factor).clamp(0.1, 8.0);
         let k = new_zoom / self.zoom;
         let cx_ = self.view_origin.0 + self.view_side / 2.0;
@@ -847,7 +864,11 @@ impl Render for MemeView {
                         if dy == 0.0 {
                             return;
                         }
-                        let new_zoom = (this.zoom * (dy * 0.18).exp()).clamp(0.1, 8.0);
+                        // Zoom speed falls off at high magnification: one
+                        // notch is ~20% at 1x but only ~5% at 8x, which
+                        // kills the jolt when deep-zoomed.
+                        let speed = 0.18 / (1.0 + (this.zoom - 1.0).max(0.0) * 0.35);
+                        let new_zoom = (this.zoom * (dy * speed).exp()).clamp(0.1, 8.0);
                         let k = new_zoom / this.zoom;
                         // Keep the point under the cursor anchored.
                         let cx_ = ev.position.x / px(1.0);
@@ -869,25 +890,38 @@ impl Render for MemeView {
                         if let Some((layer, lx, ly)) = this.drag.take() {
                             let mut region_ok = false;
                             let mut rect = (0.0, 0.0, 0.0, 0.0);
+                            let mut oldx = 0.0;
+                            let mut oldy = 0.0;
                             if let Some(l) = this.doc.layers.get_mut(layer) {
                                 let s = this.doc.width as f32 / this.view_side.max(1.0);
-                                let scale = l.transform.scale.max(0.01);
-                                let (oldx, oldy) = (l.transform.x, l.transform.y);
+                                oldx = l.transform.x;
+                                oldy = l.transform.y;
                                 l.transform.x += (ev.position.x / px(1.0) - lx) * s;
                                 l.transform.y += (ev.position.y / px(1.0) - ly) * s;
-                                let (newx, newy) = (l.transform.x, l.transform.y);
-                                // Dirty region = union of old+new layer bbox;
-                                // the composite itself waits for render().
-                                if let Some((w0, h0)) = layer_size_of(&this.doc, &mut this.renderer, layer) {
+                            }
+                            // Clamp into the canvas, then dirty the union of
+                            // old+new layer bbox; the composite waits for
+                            // render().
+                            if let Some((w0, h0)) = layer_size_of(&this.doc, &mut this.renderer, layer) {
+                                let (docw, doch) = (this.doc.width as f32, this.doc.height as f32);
+                                let mut scale = 1.0;
+                                let mut newxy = (oldx, oldy);
+                                if let Some(l) = this.doc.layers.get_mut(layer) {
+                                    scale = l.transform.scale.max(0.01);
                                     let (w, h) = (w0 * scale, h0 * scale);
-                                    rect = (
-                                        oldx.min(newx) - 2.0,
-                                        oldy.min(newy) - 2.0,
-                                        oldx.max(newx) + w + 2.0,
-                                        oldy.max(newy) + h + 2.0,
-                                    );
-                                    region_ok = true;
+                                    l.transform.x = if w >= docw { 0.0 } else { l.transform.x.clamp(0.0, docw - w) };
+                                    l.transform.y = if h >= doch { 0.0 } else { l.transform.y.clamp(0.0, doch - h) };
+                                    newxy = (l.transform.x, l.transform.y);
                                 }
+                                let (newx, newy) = newxy;
+                                let (w, h) = (w0 * scale, h0 * scale);
+                                rect = (
+                                    oldx.min(newx) - 2.0,
+                                    oldy.min(newy) - 2.0,
+                                    oldx.max(newx) + w + 2.0,
+                                    oldy.max(newy) + h + 2.0,
+                                );
+                                region_ok = true;
                             }
                             if region_ok {
                                 this.invalidate_region(rect.0, rect.1, rect.2, rect.3);
