@@ -68,7 +68,9 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
 - [x] Light theme: LIGHT palette + Ctrl+T toggle (all chrome colors theme-sourced).
 - [x] User-facing docs: README.md (controls, features, design notes) — keep in
       sync with every feature landing.
-- [ ] Layer panel v2: opacity slider, drag-to-reorder, rename.
+- [x] Layer opacity: `]`/`[` adjust selected layer (5% steps, clamp .05..1),
+      bar per row in the panel.
+- [ ] Layer panel v2: drag-to-reorder, slider-drag opacity.
 - [ ] Spinner/progress overlay for multi-second ops (big GIF import,
       huge exports): compositing worker reports; UI shows indicator.
 - [ ] Windows support check (gpui-pre is cross-platform; CI later).

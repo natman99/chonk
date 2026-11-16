@@ -37,6 +37,8 @@ GIF exports animate when the document contains an animated layer.
 | Edit selected caption | `Enter` (finish with `Enter`/`Esc`) |
 | Delete selected layer | `Del` / `Backspace` |
 | Nudge selected layer | arrow keys (10 px) |
+| Selected layer opacity | `]` up · `[` down (5% steps) |
+| Toggle light/dark theme | `Ctrl+T` |
 | Play / pause GIF | `Space` |
 | Export quick | `E` `J` `W` `G` |
 
@@ -67,6 +69,7 @@ Right side, topmost layer first:
 - Click a row to select the layer.
 - `◉` / `◎` toggle visibility.
 - `▲` / `▼` reorder.
+- A small bar shows each layer's opacity (`]`/`[` adjust the selected one).
 - `✕` delete.
 
 ## Themes

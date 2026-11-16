@@ -40,7 +40,9 @@ actions!(
         SaveAs,
         CycleUp,
         CycleDown,
-        ToggleTheme
+        ToggleTheme,
+        OpacityUp,
+        OpacityDown
     ]
 );
 
@@ -996,6 +998,14 @@ impl Render for MemeView {
                 this.dark = !this.dark;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &OpacityUp, _window, cx| {
+                this.adjust_opacity(0.05);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &OpacityDown, _window, cx| {
+                this.adjust_opacity(-0.05);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -1316,6 +1326,19 @@ impl MemeView {
                 )
                 .child(div().flex_1().child(layer_name(l)))
                 .child(
+                    // Opacity bar (keyboard [ / ] adjusts the selected layer).
+                    div()
+                        .w(px(40.0))
+                        .h(px(4.0))
+                        .bg(rgb(th.border))
+                        .child(
+                            div()
+                                .w(px(40.0 * l.opacity))
+                                .h(px(4.0))
+                                .bg(rgb(th.accent)),
+                        ),
+                )
+                .child(
                     div()
                         .id(SharedString::from(format!("up{i}")))
                         .cursor_pointer()
@@ -1356,6 +1379,16 @@ impl MemeView {
             panel = panel.child(row);
         }
         panel
+    }
+
+    /// Nudge the selected layer's opacity by `delta` (clamped 0.05..1).
+    fn adjust_opacity(&mut self, delta: f32) {
+        if let Some(i) = self.selected {
+            if let Some(l) = self.doc.layers.get_mut(i) {
+                l.opacity = (l.opacity + delta).clamp(0.05, 1.0);
+                self.invalidate();
+            }
+        }
     }
 
     /// Swap a layer with its neighbor (dir=1 moves it up the stack).
@@ -1426,6 +1459,8 @@ fn main() {
             KeyBinding::new("tab", CycleUp, Some(CHONK_CTX)),
             KeyBinding::new("shift-tab", CycleDown, Some(CHONK_CTX)),
             KeyBinding::new("ctrl-t", ToggleTheme, Some(CHONK_CTX)),
+            KeyBinding::new("]", OpacityUp, Some(CHONK_CTX)),
+            KeyBinding::new("[", OpacityDown, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they
