@@ -82,13 +82,13 @@ const DARK: Theme = Theme {
 };
 
 const LIGHT: Theme = Theme {
-    bg: 0xe9e9ee,
-    panel: 0xdcdce4,
-    border: 0x9d9dab,
+    bg: 0xd9d9e0,
+    panel: 0xcbcbd6,
+    border: 0x9494a2,
     text: 0x1a1a22,
-    dim: 0x5c5c6a,
+    dim: 0x555562,
     accent: 0x0e7490,
-    sel: 0xc3e2ec,
+    sel: 0xb9d8e4,
     danger: 0xc23636,
     caret: 0xc2410c,
 };
