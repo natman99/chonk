@@ -840,13 +840,20 @@ impl Render for MemeView {
                     .size_full()
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
-                        // Clicking away ends editing; if the caption being
-                        // edited is empty, it is a ghost now — remove it.
-                        if this.edit_mode {
-                            this.prune_empty_caption();
-                        }
                         let (dx, dy) = this.to_doc(ev.position.x / px(1.0), ev.position.y / px(1.0));
-                        let new_sel = this.hit_test(dx, dy);
+                        let mut new_sel = this.hit_test(dx, dy);
+                        // Clicking away from an empty caption being edited:
+                        // it is a ghost now — remove it. Clicking ON it
+                        // (e.g. to drag it) keeps it alive.
+                        if this.edit_mode && new_sel != this.selected {
+                            let old = this.selected;
+                            this.prune_empty_caption();
+                            if this.selected.is_none() && old.is_some() {
+                                // Layer removed: shift higher indices.
+                                let old = old.unwrap();
+                                new_sel = new_sel.map(|s| if s > old { s - 1 } else { s });
+                            }
+                        }
                         if new_sel != this.selected {
                             this.selected = new_sel;
                             this.edit_mode = false; // selection change ends editing
@@ -1041,10 +1048,10 @@ fn main() {
                     }
                     Err(e) => eprintln!("chonk: {e}"),
                 }
-            });
+            }).ok();
             view.update(cx, |_v, window, _cx| {
                 window.set_window_title(format!("Chonk — {label}").as_str());
-            });
+            }).ok();
         }
         cx.bind_keys([
             KeyBinding::new("q", ToggleQuote, Some(CHONK_CTX)),
