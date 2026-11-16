@@ -427,10 +427,15 @@ impl MemeView {
 }
 
 /// chonk-core premultiplied-RGBA pixmap -> gpui RenderImage.
-/// (gpui-pre 0.3.10 consumes RGBA directly — do NOT byte-swap to BGRA;
-/// the doc comment on `RenderImage` is stale for this fork.)
+/// gpui-pre 0.3.13 expects **BGRA** frames (its own decoders swap RGBA->BGR
+/// before upload; see platform.rs decode_static_image_from_decoder), so swap
+/// R/B here. (0.3.10 consumed RGBA directly — re-check on every gpui bump.)
 fn render_image_from_pixmap(pm: &sk::Pixmap) -> RenderImage {
-    let img = image::RgbaImage::from_raw(pm.width(), pm.height(), pm.data().to_vec())
+    let mut buf = pm.data().to_vec();
+    for pixel in buf.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let img = image::RgbaImage::from_raw(pm.width(), pm.height(), buf)
         .expect("buffer sized to pixmap");
     let frame = image::Frame::new(img);
     RenderImage::new(smallvec::smallvec![frame])
