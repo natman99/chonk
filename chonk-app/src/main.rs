@@ -116,6 +116,9 @@ struct RenderJob {
     /// Optional file to write after compositing (encoding stays off the UI
     /// thread; gif re-composites every frame with the worker's caches).
     export: Option<(String, String)>, // (path, format)
+    /// Preview resolution: composite at doc*scale (zoomed-out display).
+    /// Export jobs always force 1.0.
+    scale: f32,
 }
 
 /// What the worker sends back.
@@ -135,6 +138,7 @@ fn spawn_render_worker() -> (
     std::thread::spawn(move || {
         let mut renderer = Renderer::new();
         let mut canvas: Option<sk::Pixmap> = None;
+        let mut canvas_scale: f32 = 1.0;
         let mut last_seq: u64 = 0;
         while let Ok(mut job) = jr.recv() {
             // Coalesce queued jobs into one (newest doc/frame, union region).
@@ -149,24 +153,34 @@ fn spawn_render_worker() -> (
                 job.frame = j2.frame;
                 job.seq = j2.seq;
                 job.export = j2.export.or(job.export);
+                job.scale = j2.scale;
             }
             if job.seq <= last_seq {
                 continue;
             }
             last_seq = job.seq;
-            let pm = match (job.region, canvas.as_ref()) {
-                (Some((x0, y0, x1, y1)), Some(base)) => {
-                    let x = x0.max(0.0).floor() as u32;
-                    let y = y0.max(0.0).floor() as u32;
-                    let w = (x1.floor().max(x as f32 + 1.0)) as u32 - x;
-                    let h = (y1.floor().max(y as f32 + 1.0)) as u32 - y;
-                    let mut c = base.clone();
-                    let region = renderer.render_region_at(&job.doc, x, y, w, h, job.frame);
-                    Renderer::overlay_region(&mut c, &region, x, y);
-                    c
-                }
-                _ => renderer.composite_at(&job.doc, job.frame),
+            // Exports must be full resolution.
+            if job.export.is_some() {
+                job.scale = 1.0;
+            }
+            let pm = if job.scale < 0.999 {
+                // Zoomed-out preview: composite at display resolution.
+                renderer.composite_scaled(&job.doc, job.frame, job.scale)
+            } else if let (Some((x0, y0, x1, y1)), Some(base)) = (job.region, canvas.as_ref())
+            && canvas_scale == 1.0
+            {
+                let x = x0.max(0.0).floor() as u32;
+                let y = y0.max(0.0).floor() as u32;
+                let w = (x1.floor().max(x as f32 + 1.0)) as u32 - x;
+                let h = (y1.floor().max(y as f32 + 1.0)) as u32 - y;
+                let mut c = base.clone();
+                let region = renderer.render_region_at(&job.doc, x, y, w, h, job.frame);
+                Renderer::overlay_region(&mut c, &region, x, y);
+                c
+            } else {
+                renderer.composite_at(&job.doc, job.frame)
             };
+            canvas_scale = job.scale;
             if let Some((path, fmt)) = &job.export {
                 let encoded = match fmt.as_str() {
                     "gif" => {
@@ -573,6 +587,7 @@ impl MemeView {
             frame,
             region: None,
             export: Some((path.clone(), fmt.to_string())),
+            scale: 1.0,
         };
         if self.job_tx.send(job).is_ok() {
             window.set_window_title(format!("Chonk — exporting {path}…").as_str());
@@ -713,12 +728,26 @@ impl Render for MemeView {
         if self.dirty && !self.in_flight {
             let frame = if self.playing { self.frame } else { 0 };
             self.seq += 1;
+            // Preview resolution: when the canvas displays smaller than the
+            // document, composite at display size (dirty-region path is
+            // full-res only). Mirror render()'s side math below.
+            let ew = _window.bounds().size.width / px(1.0) - 24.0;
+            let eh = _window.bounds().size.height / px(1.0) - 24.0;
+            let side = (ew.min(eh).max(1.0) * self.zoom).max(40.0);
+            let scale = (side / self.doc.width as f32).min(1.0).max(0.05);
+            let region = if scale < 0.999 {
+                self.dirty_region = None;
+                None
+            } else {
+                self.dirty_region.take()
+            };
             let job = RenderJob {
                 seq: self.seq,
                 doc: self.doc.clone(),
                 frame,
-                region: self.dirty_region.take(),
+                region,
                 export: None,
+                scale,
             };
             if self.job_tx.send(job).is_ok() {
                 self.in_flight = true;
@@ -895,6 +924,9 @@ impl Render for MemeView {
                         this.pan.0 += (cx_ - this.view_origin.0) * (1.0 - k) + ds / 2.0;
                         this.pan.1 += (cy_ - this.view_origin.1) * (1.0 - k) + ds / 2.0;
                         this.zoom = new_zoom;
+                        // Resolution may have changed with zoom: refresh the
+                        // composite at the new preview scale.
+                        this.invalidate();
                         cx.notify();
                     }))
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {

@@ -53,9 +53,10 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
 - [x] Empty captions are pruned (backspacing a caption away deletes the layer).
 - [x] Zoom/pan: scroll-wheel zoom anchored at cursor, drag empty canvas to pan,
       =/- keyboard zoom, 0 resets. Pan/zoom are GPU-only (no recomposite).
-      Worker-side downsampled compositing at low zoom still planned.
+- [x] Downsampled preview: zoomed-out canvases composite at display
+      resolution (Renderer::composite_scaled; bg cached at preview size,
+      layer blits carry the global scale). Exports always force full res.
 - [ ] File open dialog (rfd or portal) once DnD verdict is in.
-- [ ] Zoom/pan: preview-resolution compositing (downsample when zoomed out).
 - [ ] Layer list panel (visibility, reorder, opacity).
 - [ ] Spinner/progress overlay for multi-second ops (big GIF import,
       huge exports): compositing worker reports; UI shows indicator.

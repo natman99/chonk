@@ -33,6 +33,43 @@ impl Renderer {
         self.composite_full(doc, frame)
     }
 
+    /// Composite at preview resolution: the canvas is `doc * scale` and every
+    /// layer blit carries the extra global scale. Used when the canvas is
+    /// displayed smaller than the document (zoomed out) — blits and the
+    /// texture upload shrink with the preview, while text keeps its full
+    /// rasterization (cache reuse) and is downsampled at blit time.
+    pub fn composite_scaled(&mut self, doc: &Document, frame: usize, scale: f32) -> sk::Pixmap {
+        if scale >= 0.999 {
+            return self.composite_at(doc, frame);
+        }
+        let w = ((doc.width as f32) * scale).max(1.0) as u32;
+        let h = ((doc.height as f32) * scale).max(1.0) as u32;
+        let key = format!("S{scale:.4} {}x{}{:?}", doc.width, doc.height, doc.background);
+        let mut canvas = match self.bg_cache.get(&key) {
+            Some(c) => c.clone(),
+            None => {
+                let full = self.background_pm(doc);
+                let mut c = sk::Pixmap::new(w, h).expect("valid canvas size");
+                let mut paint = sk::PixmapPaint::default();
+                paint.quality = sk::FilterQuality::Bicubic;
+                c.draw_pixmap(
+                    0,
+                    0,
+                    full.as_ref(),
+                    &paint,
+                    sk::Transform::from_scale(scale, scale),
+                    None,
+                );
+                if !matches!(doc.background, Background::Transparent) {
+                    self.bg_cache.insert(key, c.clone());
+                }
+                c
+            }
+        };
+        self.paint_layers(&mut canvas, doc, frame, scale);
+        canvas
+    }
+
     /// Number of frames an animated export of `doc` would have.
     pub fn frame_count(doc: &Document) -> usize {
         doc.layers
@@ -122,12 +159,11 @@ impl Renderer {
         );
     }
 
-    fn composite_full(&mut self, doc: &Document, frame: usize) -> sk::Pixmap {
+    /// Full-resolution background pixmap for the document (cached).
+    fn background_pm(&mut self, doc: &Document) -> sk::Pixmap {
         let bg_key = format!("{}x{}{:?}", doc.width, doc.height, doc.background);
         if let Some(cached) = self.bg_cache.get(&bg_key) {
-            let mut canvas = cached.clone();
-            self.paint_layers(&mut canvas, doc, frame);
-            return canvas;
+            return cached.clone();
         }
         let mut canvas = sk::Pixmap::new(doc.width, doc.height).expect("valid canvas size");
 
@@ -161,26 +197,31 @@ impl Renderer {
         } else {
             self.bg_cache.insert(bg_key, canvas.clone());
         }
-        self.paint_layers(&mut canvas, doc, frame);
         canvas
     }
 
-    fn paint_layers(&mut self, canvas: &mut sk::Pixmap, doc: &Document, frame: usize) {
+    fn composite_full(&mut self, doc: &Document, frame: usize) -> sk::Pixmap {
+        let mut canvas = self.background_pm(doc);
+        self.paint_layers(&mut canvas, doc, frame, 1.0);
+        canvas
+    }
+
+    fn paint_layers(&mut self, canvas: &mut sk::Pixmap, doc: &Document, frame: usize, scale: f32) {
         for layer in doc.layers.iter().filter(|l| l.visible) {
             match &layer.kind {
                 LayerKind::Image { pixmap } => {
-                    blit(canvas, pixmap, &layer.transform, layer.opacity);
+                    blit(canvas, pixmap, &layer.transform, layer.opacity, scale);
                 }
                 LayerKind::AnimatedImage { image } => {
-                    blit(canvas, image.frame(frame), &layer.transform, layer.opacity);
+                    blit(canvas, image.frame(frame), &layer.transform, layer.opacity, scale);
                 }
                 LayerKind::Svg { tree } => {
                     let pm = crate::svg::render(tree);
-                    blit(canvas, &pm, &layer.transform, layer.opacity);
+                    blit(canvas, &pm, &layer.transform, layer.opacity, scale);
                 }
                 LayerKind::Text { text, style } => {
                     if let Some(rt) = self.text.render(text, style) {
-                        blit(canvas, &rt.pixmap, &layer.transform, layer.opacity);
+                        blit(canvas, &rt.pixmap, &layer.transform, layer.opacity, scale);
                     }
                 }
             }
@@ -188,17 +229,23 @@ impl Renderer {
     }
 }
 
-fn blit(canvas: &mut sk::Pixmap, pm: &sk::Pixmap, t: &crate::Transform, opacity: f32) {
+fn blit(canvas: &mut sk::Pixmap, pm: &sk::Pixmap, t: &crate::Transform, opacity: f32, scale: f32) {
     let mut paint = sk::PixmapPaint::default();
     paint.opacity = opacity.clamp(0.0, 1.0);
     // tiny-skia's fast path: an untransformed blit is a straight blend.
     // Bicubic only pays off on scaled/rotated layers; translation alone
     // (drags) stays Nearest — Bilinear in a debug build costs 10x for
-    // sub-pixel smoothness nobody sees at meme scale.
-    paint.quality = if t.scale == 1.0 && t.rotation_deg == 0.0 {
+    // sub-pixel smoothness nobody sees at meme scale. Preview compositing
+    // (scale != 1) always downsamples, so Bilinear.
+    paint.quality = if t.scale == 1.0 && t.rotation_deg == 0.0 && scale == 1.0 {
         sk::FilterQuality::Nearest
     } else {
         sk::FilterQuality::Bilinear
     };
-    canvas.draw_pixmap(0, 0, pm.as_ref(), &paint, t.to_skia(), None);
+    let tr = if scale == 1.0 {
+        t.to_skia()
+    } else {
+        t.to_skia().post_scale(scale, scale)
+    };
+    canvas.draw_pixmap(0, 0, pm.as_ref(), &paint, tr, None);
 }

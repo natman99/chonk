@@ -221,3 +221,18 @@ fn blur_filter_reduces_contrast() {
     assert!(blurred.pixels()[32 * 64 + 32].alpha() > 0);
     let _ = pm;
 }
+
+#[test]
+fn composite_scaled_preview() {
+    use chonk_core::render::Renderer;
+    let mut doc = Document::new(200, 100);
+    doc.background = chonk_core::document::Background::Solid(sk::Color::from_rgba8(10, 200, 10, 255));
+    let mut r = Renderer::new();
+    let pm = r.composite_scaled(&doc, 0, 0.5);
+    assert_eq!((pm.width(), pm.height()), (100, 50));
+    let c = pm.pixels()[25 * 100 + 50];
+    assert!(c.red() < 30 && c.green() > 180, "bg downsampled: {c:?}");
+    // scale >= 1 falls through to full resolution.
+    let full = r.composite_scaled(&doc, 0, 1.0);
+    assert_eq!((full.width(), full.height()), (200, 100));
+}
