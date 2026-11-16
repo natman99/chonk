@@ -39,7 +39,8 @@ actions!(
         OpenFile,
         SaveAs,
         CycleUp,
-        CycleDown
+        CycleDown,
+        ToggleTheme
     ]
 );
 
@@ -65,6 +66,7 @@ struct Theme {
     accent: u32,
     sel: u32,
     danger: u32,
+    caret: u32,
 }
 
 const DARK: Theme = Theme {
@@ -76,6 +78,19 @@ const DARK: Theme = Theme {
     accent: 0x22d3ee,
     sel: 0x23233a,
     danger: 0xf87171,
+    caret: 0xf59e0b,
+};
+
+const LIGHT: Theme = Theme {
+    bg: 0xe9e9ee,
+    panel: 0xdcdce4,
+    border: 0x9d9dab,
+    text: 0x1a1a22,
+    dim: 0x5c5c6a,
+    accent: 0x0e7490,
+    sel: 0xc3e2ec,
+    danger: 0xc23636,
+    caret: 0xc2410c,
 };
 
 /// Short human name for a layer row.
@@ -133,6 +148,8 @@ struct MemeView {
     edit_mode: bool,
     /// One-shot message to surface in the window title (export results).
     status: Option<String>,
+    /// Dark theme by default; Ctrl+T toggles.
+    dark: bool,
     focus_handle: FocusHandle,
 }
 
@@ -315,6 +332,7 @@ impl MemeView {
             frame: 0,
             edit_mode: false,
             status: None,
+            dark: true,
             focus_handle: cx.focus_handle(),
         };
         v.recomposite();
@@ -902,7 +920,7 @@ impl Render for MemeView {
         }
         let image = self.composited.clone();
         let b = _window.bounds();
-        let th = &DARK;
+        let th = if self.dark { &DARK } else { &LIGHT };
         if let Some(msg) = self.status.take() {
             _window.set_window_title(format!("Chonk — {msg}").as_str());
         }
@@ -972,6 +990,10 @@ impl Render for MemeView {
             }))
             .on_action(cx.listener(|this, _: &CycleDown, _window, cx| {
                 this.cycle_layer(-1);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleTheme, _window, cx| {
+                this.dark = !this.dark;
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
@@ -1186,6 +1208,7 @@ impl Render for MemeView {
                             let editing = self.edit_mode;
                             let border = th.border;
                             let accent = th.accent;
+                            let caret = th.caret;
                             move |bounds, _bounds, window, cx| {
                                 // Route typed characters (IME included) to the
                                 // view's EntityInputHandler while focused.
@@ -1226,7 +1249,7 @@ impl Render for MemeView {
                                 if editing {
                                     window.paint_quad(fill(
                                         Bounds { origin: point(x0 + w + px(4.0), y0 + h * 0.15), size: size(px(3.0), h * 0.7) },
-                                        rgb(0xf59e0b),
+                                        rgb(caret),
                                     ));
                                 }
                             }
@@ -1234,15 +1257,14 @@ impl Render for MemeView {
                         },
                     ).size_full()),
             )
-            .child(self.layer_panel(cx))
+            .child(self.layer_panel(th, cx))
     }
 }
 
 impl MemeView {
     /// Right-hand layer list: topmost layer first. Click row = select;
     /// eye = visibility; ▲/▼ = reorder; ✕ = delete.
-    fn layer_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let th = &DARK;
+    fn layer_panel(&self, th: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut panel = div()
             .id("layer-panel")
             .flex_none()
@@ -1403,6 +1425,7 @@ fn main() {
             KeyBinding::new("ctrl-s", SaveAs, Some(CHONK_CTX)),
             KeyBinding::new("tab", CycleUp, Some(CHONK_CTX)),
             KeyBinding::new("shift-tab", CycleDown, Some(CHONK_CTX)),
+            KeyBinding::new("ctrl-t", ToggleTheme, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they

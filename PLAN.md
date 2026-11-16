@@ -65,7 +65,9 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
 - [x] Theme palette: all UI colors flow through `Theme`/`DARK` consts.
 - [x] Oversized imports stay movable: clamp range flips to [docw-w, 0] when
       the layer is larger than the canvas (canvas stays covered).
-- [ ] Light theme (Theme::LIGHT + toggle).
+- [x] Light theme: LIGHT palette + Ctrl+T toggle (all chrome colors theme-sourced).
+- [x] User-facing docs: README.md (controls, features, design notes) — keep in
+      sync with every feature landing.
 - [ ] Layer panel v2: opacity slider, drag-to-reorder, rename.
 - [ ] Spinner/progress overlay for multi-second ops (big GIF import,
       huge exports): compositing worker reports; UI shows indicator.
