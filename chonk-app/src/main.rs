@@ -203,14 +203,24 @@ fn main() {
         cx.on_action({
             let view = view.clone();
             move |_: &ToggleQuote, cx: &mut App| {
-                eprintln!("[chonk] ToggleQuote action fired");
                 view.update(cx, |v, _window, cx| {
                     v.toggle_quote();
+                    eprintln!(
+                        "[chonk] ToggleQuote fired; quote_mode={}",
+                        v.quote_mode
+                    );
                     cx.notify();
                 });
             }
         });
         cx.bind_keys([KeyBinding::new("q", ToggleQuote, None)]);
+        // TEMP DEBUG: log every keystroke GPUI receives.
+        cx.observe_keystrokes(|ev, _window, _cx| {
+            eprintln!(
+                "[chonk] keystroke key={:?} key_char={:?}",
+                ev.keystroke.key, ev.keystroke.key_char
+            );
+        });
         cx.activate(true);
     });
 }
