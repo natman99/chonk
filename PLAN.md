@@ -47,7 +47,10 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
 - [x] In-app text editing (v1): Enter edits the selected caption live on the
       canvas (EntityInputHandler + chonk-edit key context; append/backspace,
       IME commits). v2 ideas: caret positioning, selection, per-glyph editing.
-- [ ] Export dialog: E key -> write png/jpg/webp/gif by extension.
+- [x] Export path: E png / J jpg / W webp / G gif -> ~/Downloads/chonk-<ts>.<ext>.
+      Encoding + file write run on the render worker; result shown in title.
+      File picker dialog still planned.
+- [x] Empty captions are pruned (backspacing a caption away deletes the layer).
 - [ ] File open dialog (rfd or portal) once DnD verdict is in.
 - [ ] Zoom/pan: preview-resolution compositing (downsample when zoomed out).
 - [ ] Layer list panel (visibility, reorder, opacity).

@@ -28,7 +28,11 @@ actions!(
         TogglePlay,
         EditCaption,
         FinishEdit,
-        DeleteChar
+        DeleteChar,
+        ExportPng,
+        ExportJpg,
+        ExportWebp,
+        ExportGif
     ]
 );
 
@@ -46,7 +50,7 @@ struct MemeView {
     renderer: Renderer,
     composited: Option<Arc<RenderImage>>,
     job_tx: std::sync::mpsc::Sender<RenderJob>,
-    result_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<(u64, sk::Pixmap)>>>,
+    result_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<WorkerMsg>>>,
     seq: u64,
     applied_seq: u64,
     in_flight: bool,
@@ -68,6 +72,8 @@ struct MemeView {
     frame: usize,
     /// True while the selected text layer receives typed characters.
     edit_mode: bool,
+    /// One-shot message to surface in the window title (export results).
+    status: Option<String>,
     focus_handle: FocusHandle,
 }
 
@@ -99,16 +105,25 @@ struct RenderJob {
     frame: usize,
     /// Document-space rect to patch, or None = full canvas.
     region: Option<(f32, f32, f32, f32)>,
+    /// Optional file to write after compositing (encoding stays off the UI
+    /// thread; gif re-composites every frame with the worker's caches).
+    export: Option<(String, String)>, // (path, format)
+}
+
+/// What the worker sends back.
+enum WorkerMsg {
+    Frame(u64, sk::Pixmap),
+    Status(String),
 }
 
 /// Worker thread owning the Renderer (and its caches) plus the last full
 /// canvas; region jobs patch its copy. The UI thread never rasterizes.
 fn spawn_render_worker() -> (
     std::sync::mpsc::Sender<RenderJob>,
-    std::sync::mpsc::Receiver<(u64, sk::Pixmap)>,
+    std::sync::mpsc::Receiver<WorkerMsg>,
 ) {
     let (jt, jr) = std::sync::mpsc::channel::<RenderJob>();
-    let (rt, rr) = std::sync::mpsc::channel::<(u64, sk::Pixmap)>();
+    let (rt, rr) = std::sync::mpsc::channel::<WorkerMsg>();
     std::thread::spawn(move || {
         let mut renderer = Renderer::new();
         let mut canvas: Option<sk::Pixmap> = None;
@@ -125,6 +140,7 @@ fn spawn_render_worker() -> (
                 job.doc = j2.doc;
                 job.frame = j2.frame;
                 job.seq = j2.seq;
+                job.export = j2.export.or(job.export);
             }
             if job.seq <= last_seq {
                 continue;
@@ -143,8 +159,29 @@ fn spawn_render_worker() -> (
                 }
                 _ => renderer.composite_at(&job.doc, job.frame),
             };
+            if let Some((path, fmt)) = &job.export {
+                let encoded = match fmt.as_str() {
+                    "gif" => {
+                        let (frames, delays) = renderer.composite_animated(&job.doc);
+                        chonk_core::codecs::export_gif(&frames, &delays)
+                    }
+                    "jpg" => chonk_core::codecs::export_jpeg(&pm, 92),
+                    "webp" => chonk_core::codecs::export_webp(&pm),
+                    _ => chonk_core::codecs::export_png(&pm),
+                };
+                let msg = match encoded {
+                    Ok(bytes) => match std::fs::write(path, bytes) {
+                        Ok(()) => format!("saved {path}"),
+                        Err(e) => format!("export failed: {e}"),
+                    },
+                    Err(e) => format!("export failed: {e}"),
+                };
+                if rt.send(WorkerMsg::Status(msg)).is_err() {
+                    break;
+                }
+            }
             canvas = Some(pm.clone());
-            if rt.send((job.seq, pm)).is_err() {
+            if rt.send(WorkerMsg::Frame(job.seq, pm)).is_err() {
                 break; // view gone
             }
         }
@@ -195,6 +232,7 @@ impl MemeView {
             playing: false,
             frame: 0,
             edit_mode: false,
+            status: None,
             focus_handle: cx.focus_handle(),
         };
         v.recomposite();
@@ -210,8 +248,14 @@ impl MemeView {
                         .await
                 };
                 match got {
-                    Ok((seq, pm)) => {
+                    Ok(WorkerMsg::Frame(seq, pm)) => {
                         let _ = this.update(cx, |v, cx| v.apply_frame(seq, pm, cx));
+                    }
+                    Ok(WorkerMsg::Status(msg)) => {
+                        let _ = this.update(cx, |v, _cx| {
+                            eprintln!("[chonk] {msg}");
+                            v.status = Some(msg);
+                        });
                     }
                     Err(_) => break, // view dropped
                 }
@@ -227,6 +271,7 @@ impl MemeView {
         }
         self.applied_seq = seq;
         self.in_flight = false;
+        let pm = Arc::new(pm);
         self.composited = Some(Arc::new(render_image_from_pixmap(&pm)));
         // If more happened while the job ran, render() sends the next job.
         cx.notify();
@@ -450,7 +495,48 @@ impl MemeView {
 
     fn finish_edit(&mut self, window: &mut Window) {
         self.edit_mode = false;
+        self.prune_empty_caption();
         window.set_window_title("Chonk — Q quote · T text · Enter edit · arrows nudge · Del delete".into());
+    }
+
+    /// An emptied caption is a ghost: remove the layer entirely.
+    fn prune_empty_caption(&mut self) {
+        if let Some(i) = self.selected {
+            let empty = self.doc.layers.get(i).is_some_and(|l| {
+                matches!(&l.kind, LayerKind::Text { text, .. } if text.trim().is_empty())
+            });
+            if empty {
+                self.doc.layers.remove(i);
+                self.selected = None;
+                self.edit_mode = false;
+                self.invalidate();
+            }
+        }
+    }
+
+    /// Queue an export job; encoding + file write happen on the worker.
+    fn export(&mut self, fmt: &str, window: &mut Window) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let dir = std::env::var("HOME")
+            .map(|h| format!("{h}/Downloads"))
+            .unwrap_or_else(|_| ".".to_string());
+        std::fs::create_dir_all(&dir).ok();
+        let path = format!("{dir}/chonk-{ts}.{fmt}");
+        self.seq += 1;
+        let frame = if self.playing { self.frame } else { 0 };
+        let job = RenderJob {
+            seq: self.seq,
+            doc: self.doc.clone(),
+            frame,
+            region: None,
+            export: Some((path.clone(), fmt.to_string())),
+        };
+        if self.job_tx.send(job).is_ok() {
+            window.set_window_title(format!("Chonk — exporting {path}…").as_str());
+        }
     }
 
     fn delete_char(&mut self) {
@@ -462,6 +548,7 @@ impl MemeView {
                 }
             }
         }
+        self.prune_empty_caption();
     }
 
     fn recomposite(&mut self) {
@@ -589,6 +676,7 @@ impl Render for MemeView {
                 doc: self.doc.clone(),
                 frame,
                 region: self.dirty_region.take(),
+                export: None,
             };
             if self.job_tx.send(job).is_ok() {
                 self.in_flight = true;
@@ -597,6 +685,9 @@ impl Render for MemeView {
         }
         let image = self.composited.clone();
         let b = _window.bounds();
+        if let Some(msg) = self.status.take() {
+            _window.set_window_title(format!("Chonk — {msg}").as_str());
+        }
         // Canvas element sits inside p_3 padding (12px); the image is a
         // centered square within it. Mirror the paint closure's math so
         // mouse->doc mapping and hit-testing line up with what is drawn.
@@ -631,6 +722,10 @@ impl Render for MemeView {
                 this.delete_char();
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ExportPng, window, _cx| this.export("png", window)))
+            .on_action(cx.listener(|this, _: &ExportJpg, window, _cx| this.export("jpg", window)))
+            .on_action(cx.listener(|this, _: &ExportWebp, window, _cx| this.export("webp", window)))
+            .on_action(cx.listener(|this, _: &ExportGif, window, _cx| this.export("gif", window)))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -843,6 +938,10 @@ fn main() {
             KeyBinding::new("right", NudgeRight, Some(CHONK_CTX)),
             KeyBinding::new("space", TogglePlay, Some(CHONK_CTX)),
             KeyBinding::new("enter", EditCaption, Some(CHONK_CTX)),
+            KeyBinding::new("e", ExportPng, Some(CHONK_CTX)),
+            KeyBinding::new("j", ExportJpg, Some(CHONK_CTX)),
+            KeyBinding::new("w", ExportWebp, Some(CHONK_CTX)),
+            KeyBinding::new("g", ExportGif, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they
             // flow to the EntityInputHandler instead.
             KeyBinding::new("enter", FinishEdit, Some(CHONK_EDIT_CTX)),
