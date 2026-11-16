@@ -37,7 +37,9 @@ actions!(
         ZoomIn,
         ZoomOut,
         OpenFile,
-        SaveAs
+        SaveAs,
+        CycleUp,
+        CycleDown
     ]
 );
 
@@ -484,6 +486,12 @@ impl MemeView {
 
     /// Topmost visible layer whose (scaled) box contains the document point.
     fn hit_test(&mut self, dx: f32, dy: f32) -> Option<usize> {
+        self.hit_stack(dx, dy).first().copied()
+    }
+
+    /// All visible layers whose (scaled) box contains the point, top first.
+    fn hit_stack(&mut self, dx: f32, dy: f32) -> Vec<usize> {
+        let mut out = Vec::new();
         for i in (0..self.doc.layers.len()).rev() {
             if !self.doc.layers[i].visible {
                 continue;
@@ -494,10 +502,26 @@ impl MemeView {
             let Some((w, h)) = self.layer_size_checked(i) else { continue };
             let s = scale.max(0.01);
             if dx >= tx && dx <= tx + w * s && dy >= ty && dy <= ty + h * s {
-                return Some(i);
+                out.push(i);
             }
         }
-        None
+        out
+    }
+
+    /// Tab / Shift+Tab: cycle selection through the layer stack (wrapping).
+    fn cycle_layer(&mut self, dir: i32) {
+        let n = self.doc.layers.len();
+        if n == 0 {
+            return;
+        }
+        self.selected = match self.selected {
+            Some(i) => {
+                let j = if dir > 0 { i + 1 } else { i + n - 1 };
+                Some(j % n)
+            }
+            None => Some(n - 1),
+        };
+        self.edit_mode = false;
     }
 
     fn layer_size_checked(&mut self, i: usize) -> Option<(f32, f32)> {
@@ -942,6 +966,14 @@ impl Render for MemeView {
             }))
             .on_action(cx.listener(|this, _: &OpenFile, _window, cx| this.open_dialog(cx)))
             .on_action(cx.listener(|this, _: &SaveAs, _window, cx| this.save_dialog(cx)))
+            .on_action(cx.listener(|this, _: &CycleUp, _window, cx| {
+                this.cycle_layer(1);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &CycleDown, _window, cx| {
+                this.cycle_layer(-1);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -1000,7 +1032,20 @@ impl Render for MemeView {
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
                         let (dx, dy) = this.to_doc(ev.position.x / px(1.0), ev.position.y / px(1.0));
-                        let mut new_sel = this.hit_test(dx, dy);
+                        // Topmost wins; Alt+click steps DOWN through the
+                        // stack at this point (Illustrator/Inkscape style).
+                        let stack = this.hit_stack(dx, dy);
+                        let mut new_sel = if ev.modifiers.alt && !stack.is_empty() {
+                            match this
+                                .selected
+                                .and_then(|cur| stack.iter().position(|&i| i == cur))
+                            {
+                                Some(p) => stack.get(p + 1).or(stack.first()).copied(),
+                                None => stack.first().copied(),
+                            }
+                        } else {
+                            stack.first().copied()
+                        };
                         // Clicking away from an empty caption being edited:
                         // it is a ghost now — remove it. Clicking ON it
                         // (e.g. to drag it) keeps it alive.
@@ -1356,6 +1401,8 @@ fn main() {
             KeyBinding::new("0", ResetView, Some(CHONK_CTX)),
             KeyBinding::new("ctrl-o", OpenFile, Some(CHONK_CTX)),
             KeyBinding::new("ctrl-s", SaveAs, Some(CHONK_CTX)),
+            KeyBinding::new("tab", CycleUp, Some(CHONK_CTX)),
+            KeyBinding::new("shift-tab", CycleDown, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they
