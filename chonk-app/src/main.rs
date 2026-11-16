@@ -144,7 +144,6 @@ impl Render for MemeView {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
-                eprintln!("[chonk] ToggleQuote fired; quote_mode={}", this.quote_mode);
                 cx.notify();
             }))
             .size_full()

@@ -2,6 +2,7 @@
 //! tiny-skia for fill/stroke/shadow rasterization. Vector-crisp at any size.
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, Wrap};
+use std::collections::HashMap;
 use tiny_skia as sk;
 
 use crate::document::{Shadow, TextAlign, TextStyle};
@@ -9,6 +10,9 @@ use crate::document::{Shadow, TextAlign, TextStyle};
 pub struct TextEngine {
     font_system: FontSystem,
     scale: swash::scale::ScaleContext,
+    /// Rendered text cache keyed on (text, style): composites become pure
+    /// blits for unchanged layers (drags, toggles, animation frames).
+    cache: HashMap<String, std::sync::Arc<RenderedText>>,
 }
 
 pub struct RenderedText {
@@ -25,7 +29,11 @@ impl Default for TextEngine {
 
 impl TextEngine {
     pub fn new() -> Self {
-        Self { font_system: FontSystem::new(), scale: swash::scale::ScaleContext::new() }
+        Self {
+            font_system: FontSystem::new(),
+            scale: swash::scale::ScaleContext::new(),
+            cache: HashMap::new(),
+        }
     }
 
     pub fn font_system(&self) -> &FontSystem {
@@ -117,7 +125,18 @@ impl TextEngine {
     }
 
     /// Render styled text into a tight pixmap (with room for stroke + shadow).
-    pub fn render(&mut self, text: &str, style: &TextStyle) -> Option<RenderedText> {
+    /// Cached on (text, style): unchanged layers never re-rasterize.
+    pub fn render(&mut self, text: &str, style: &TextStyle) -> Option<std::sync::Arc<RenderedText>> {
+        let key = cache_key(text, style);
+        if let Some(hit) = self.cache.get(&key) {
+            return Some(hit.clone());
+        }
+        let rt = std::sync::Arc::new(self.render_uncached(text, style)?);
+        self.cache.insert(key, rt.clone());
+        Some(rt)
+    }
+
+    fn render_uncached(&mut self, text: &str, style: &TextStyle) -> Option<RenderedText> {
         let mut font_size = style.font_size;
         let (mut path, _w, _h) = self.layout(text, style, font_size)?;
 
@@ -216,4 +235,20 @@ impl TextEngine {
 
         Some(RenderedText { pixmap: pm, font_size })
     }
+}
+
+/// Exact-match cache key for (text, style). Debug-formatting the style is
+/// cheap next to rasterization and covers every visual field.
+fn cache_key(text: &str, style: &TextStyle) -> String {
+    format!(
+        "{text}\u{1f}{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        style.font_family,
+        style.font_size,
+        style.fill,
+        style.stroke,
+        style.shadow,
+        style.align,
+        style.max_width,
+        style.fit_box,
+    )
 }

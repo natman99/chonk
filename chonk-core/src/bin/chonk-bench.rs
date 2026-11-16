@@ -164,7 +164,7 @@ fn main() {
             }
             LayerKind::Text { text, style } => {
                 let rt = r.text.render(text, style).unwrap();
-                let nl = blit_doc.add_layer(LayerKind::Image { pixmap: rt.pixmap });
+                let nl = blit_doc.add_layer(LayerKind::Image { pixmap: rt.pixmap.clone() });
                 nl.transform = l.transform;
                 nl.opacity = l.opacity;
             }

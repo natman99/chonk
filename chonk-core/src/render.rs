@@ -7,6 +7,9 @@ use crate::text::TextEngine;
 
 pub struct Renderer {
     pub text: TextEngine,
+    /// Composited backgrounds keyed on (size, background): the gradient fill
+    /// is ~250ms in debug builds and only changes when the user edits it.
+    bg_cache: std::collections::HashMap<String, sk::Pixmap>,
 }
 
 impl Default for Renderer {
@@ -17,7 +20,7 @@ impl Default for Renderer {
 
 impl Renderer {
     pub fn new() -> Self {
-        Self { text: TextEngine::new() }
+        Self { text: TextEngine::new(), bg_cache: std::collections::HashMap::new() }
     }
 
     pub fn composite(&mut self, doc: &Document) -> sk::Pixmap {
@@ -120,6 +123,12 @@ impl Renderer {
     }
 
     fn composite_full(&mut self, doc: &Document, frame: usize) -> sk::Pixmap {
+        let bg_key = format!("{}x{}{:?}", doc.width, doc.height, doc.background);
+        if let Some(cached) = self.bg_cache.get(&bg_key) {
+            let mut canvas = cached.clone();
+            self.paint_layers(&mut canvas, doc, frame);
+            return canvas;
+        }
         let mut canvas = sk::Pixmap::new(doc.width, doc.height).expect("valid canvas size");
 
         match &doc.background {
@@ -145,27 +154,37 @@ impl Renderer {
             }
         }
 
+        // Background painted fresh: keep it for future composites of the same
+        // (size, background).
+        if matches!(doc.background, Background::Transparent) {
+            // Nothing to cache; canvas starts cleared anyway.
+        } else {
+            self.bg_cache.insert(bg_key, canvas.clone());
+        }
+        self.paint_layers(&mut canvas, doc, frame);
+        canvas
+    }
+
+    fn paint_layers(&mut self, canvas: &mut sk::Pixmap, doc: &Document, frame: usize) {
         for layer in doc.layers.iter().filter(|l| l.visible) {
             match &layer.kind {
                 LayerKind::Image { pixmap } => {
-                    blit(&mut canvas, pixmap, &layer.transform, layer.opacity);
+                    blit(canvas, pixmap, &layer.transform, layer.opacity);
                 }
                 LayerKind::AnimatedImage { image } => {
-                    blit(&mut canvas, image.frame(frame), &layer.transform, layer.opacity);
+                    blit(canvas, image.frame(frame), &layer.transform, layer.opacity);
                 }
                 LayerKind::Svg { tree } => {
                     let pm = crate::svg::render(tree);
-                    blit(&mut canvas, &pm, &layer.transform, layer.opacity);
+                    blit(canvas, &pm, &layer.transform, layer.opacity);
                 }
                 LayerKind::Text { text, style } => {
                     if let Some(rt) = self.text.render(text, style) {
-                        blit(&mut canvas, &rt.pixmap, &layer.transform, layer.opacity);
+                        blit(canvas, &rt.pixmap, &layer.transform, layer.opacity);
                     }
                 }
             }
         }
-
-        canvas
     }
 }
 
@@ -173,8 +192,10 @@ fn blit(canvas: &mut sk::Pixmap, pm: &sk::Pixmap, t: &crate::Transform, opacity:
     let mut paint = sk::PixmapPaint::default();
     paint.opacity = opacity.clamp(0.0, 1.0);
     // tiny-skia's fast path: an untransformed blit is a straight blend.
-    // Bicubic only pays off on scaled/rotated layers; drags use Bilinear.
-    paint.quality = if t.scale == 1.0 && t.rotation_deg == 0.0 && t.x == 0.0 && t.y == 0.0 {
+    // Bicubic only pays off on scaled/rotated layers; translation alone
+    // (drags) stays Nearest — Bilinear in a debug build costs 10x for
+    // sub-pixel smoothness nobody sees at meme scale.
+    paint.quality = if t.scale == 1.0 && t.rotation_deg == 0.0 {
         sk::FilterQuality::Nearest
     } else {
         sk::FilterQuality::Bilinear
