@@ -518,18 +518,13 @@ impl MemeView {
         }
     }
 
-    /// Zoom by an adaptive factor (gentler at high magnification),
-    /// anchored at the canvas center (keyboard zoom).
+    /// Zoom by an adaptive factor (gentler at high magnification), anchored
+    /// at the canvas center. The canvas center is 12 + ew/2 + pan — it does
+    /// not depend on side — so center-anchored zoom needs no pan change.
     fn zoom_at_center(&mut self, base: f32) {
         let speed = 0.22f32.ln() / (1.0 + (self.zoom - 1.0).max(0.0) * 0.35);
         let factor = if base > 1.0 { speed.exp() } else { (-speed).exp() };
-        let new_zoom = (self.zoom * factor).clamp(0.1, 8.0);
-        let k = new_zoom / self.zoom;
-        let cx_ = self.view_origin.0 + self.view_side / 2.0;
-        let cy_ = self.view_origin.1 + self.view_side / 2.0;
-        self.pan.0 += (cx_ - self.view_origin.0) * (1.0 - k);
-        self.pan.1 += (cy_ - self.view_origin.1) * (1.0 - k);
-        self.zoom = new_zoom;
+        self.zoom = (self.zoom * factor).clamp(0.1, 8.0);
     }
 
     fn finish_edit(&mut self, window: &mut Window) {
@@ -587,7 +582,9 @@ impl MemeView {
                 }
             }
         }
-        self.prune_empty_caption();
+        // NOTE: no pruning here — an empty caption mid-edit is still being
+        // typed into; pruning happens when editing ENDS (finish_edit or
+        // clicking away).
     }
 
     fn recomposite(&mut self) {
@@ -837,6 +834,11 @@ impl Render for MemeView {
                     .size_full()
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
+                        // Clicking away ends editing; if the caption being
+                        // edited is empty, it is a ghost now — remove it.
+                        if this.edit_mode {
+                            this.prune_empty_caption();
+                        }
                         let (dx, dy) = this.to_doc(ev.position.x / px(1.0), ev.position.y / px(1.0));
                         let new_sel = this.hit_test(dx, dy);
                         if new_sel != this.selected {
@@ -870,11 +872,15 @@ impl Render for MemeView {
                         let speed = 0.18 / (1.0 + (this.zoom - 1.0).max(0.0) * 0.35);
                         let new_zoom = (this.zoom * (dy * speed).exp()).clamp(0.1, 8.0);
                         let k = new_zoom / this.zoom;
-                        // Keep the point under the cursor anchored.
+                        // Keep the point under the cursor anchored. origin =
+                        // 12 + (ew - side)/2 + pan, so pan must absorb both
+                        // the anchor shift AND the centering shift from the
+                        // side change: dpan = (pos-origin)(1-k) + ds/2.
                         let cx_ = ev.position.x / px(1.0);
                         let cy_ = ev.position.y / px(1.0);
-                        this.pan.0 += (cx_ - this.view_origin.0) * (1.0 - k);
-                        this.pan.1 += (cy_ - this.view_origin.1) * (1.0 - k);
+                        let ds = this.view_side * (k - 1.0);
+                        this.pan.0 += (cx_ - this.view_origin.0) * (1.0 - k) + ds / 2.0;
+                        this.pan.1 += (cy_ - this.view_origin.1) * (1.0 - k) + ds / 2.0;
                         this.zoom = new_zoom;
                         cx.notify();
                     }))
