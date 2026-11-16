@@ -44,7 +44,9 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
       app receives via div.on_drop::<ExternalPaths>. Needs live-user test.
 
 ## Planned
-- [ ] In-app text editing (GPUI TextInput bound to selected caption layer).
+- [x] In-app text editing (v1): Enter edits the selected caption live on the
+      canvas (EntityInputHandler + chonk-edit key context; append/backspace,
+      IME commits). v2 ideas: caret positioning, selection, per-glyph editing.
 - [ ] Export dialog: E key -> write png/jpg/webp/gif by extension.
 - [ ] File open dialog (rfd or portal) once DnD verdict is in.
 - [ ] Zoom/pan: preview-resolution compositing (downsample when zoomed out).

@@ -5,11 +5,13 @@ use chonk_core::quote::{QuoteSpec, quote_document};
 use chonk_core::render::Renderer;
 use chonk_core::tiny_skia as sk;
 use gpui::{
-    App, AsyncApp, Bounds, Context, Corners, ExternalPaths, FocusHandle, KeyBinding, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, RenderImage, Window, WindowBounds, WindowOptions,
-    actions, canvas, div, fill, point, prelude::*, px, rgb, size,
+    App, AsyncApp, Bounds, Context, Corners, ElementInputHandler, EntityInputHandler,
+    ExternalPaths, FocusHandle, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, RenderImage, UTF16Selection, Window, WindowBounds, WindowOptions, actions,
+    canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,13 +25,19 @@ actions!(
         NudgeDown,
         NudgeLeft,
         NudgeRight,
-        TogglePlay
+        TogglePlay,
+        EditCaption,
+        FinishEdit,
+        DeleteChar
     ]
 );
 
 /// Key context this view installs while focused (Shale's pattern: bindings
 /// are scoped to a focused, tracked view — not dispatched globally).
 const CHONK_CTX: &str = "chonk";
+/// Swapped in while editing a caption: printable keys must reach the input
+/// handler instead of firing app shortcuts.
+const CHONK_EDIT_CTX: &str = "chonk-edit";
 
 struct MemeView {
     doc: Document,
@@ -58,6 +66,8 @@ struct MemeView {
     quote_mode: bool,
     playing: bool,
     frame: usize,
+    /// True while the selected text layer receives typed characters.
+    edit_mode: bool,
     focus_handle: FocusHandle,
 }
 
@@ -184,6 +194,7 @@ impl MemeView {
             quote_mode: false,
             playing: false,
             frame: 0,
+            edit_mode: false,
             focus_handle: cx.focus_handle(),
         };
         v.recomposite();
@@ -421,6 +432,38 @@ impl MemeView {
         }
     }
 
+    /// Selected layer is editable text?
+    fn selected_text(&self) -> Option<&str> {
+        let i = self.selected?;
+        match &self.doc.layers.get(i)?.kind {
+            LayerKind::Text { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+
+    fn edit_caption(&mut self, window: &mut Window) {
+        if self.selected_text().is_some() {
+            self.edit_mode = true;
+            window.set_window_title("Chonk — EDITING caption (type · Enter finishes)".into());
+        }
+    }
+
+    fn finish_edit(&mut self, window: &mut Window) {
+        self.edit_mode = false;
+        window.set_window_title("Chonk — Q quote · T text · Enter edit · arrows nudge · Del delete".into());
+    }
+
+    fn delete_char(&mut self) {
+        if let Some(i) = self.selected {
+            if let Some(LayerKind::Text { text, .. }) = self.doc.layers.get_mut(i).map(|l| &mut l.kind) {
+                if let Some(pos) = text.chars().next_back().map(|c| text.len() - c.len_utf8()) {
+                    text.remove(pos);
+                    self.invalidate();
+                }
+            }
+        }
+    }
+
     fn recomposite(&mut self) {
         self.invalidate();
     }
@@ -439,6 +482,99 @@ fn render_image_from_pixmap(pm: &sk::Pixmap) -> RenderImage {
         .expect("buffer sized to pixmap");
     let frame = image::Frame::new(img);
     RenderImage::new(smallvec::smallvec![frame])
+}
+
+impl EntityInputHandler for MemeView {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        adjusted: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let t = self.selected_text()?.to_string();
+        adjusted.replace(range.clone());
+        Some(t.get(range)?.to_string())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        // v1: caret-at-end append model, no selection.
+        None
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        _marked_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // v1: no inline IME marking; commit composed text as a normal insert.
+        self.replace_text_in_range(range, text, window, cx);
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range: Range<usize>,
+        _element_bounds: Bounds<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<gpui::Pixels>> {
+        None // no IME candidate window to position
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: gpui::Point<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None // v1: caret stays at text end (no click-to-position)
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.edit_mode || text.is_empty() {
+            return;
+        }
+        if let Some(i) = self.selected {
+            if let Some(LayerKind::Text { text: t, .. }) =
+                self.doc.layers.get_mut(i).map(|l| &mut l.kind)
+            {
+                match range {
+                    Some(r) => {
+                        let start = r.start.min(t.len());
+                        let end = r.end.max(start).min(t.len());
+                        t.replace_range(start..end, text);
+                    }
+                    None => t.push_str(text),
+                }
+                self.invalidate();
+                cx.notify();
+            }
+        }
+    }
 }
 
 impl Render for MemeView {
@@ -481,8 +617,20 @@ impl Render for MemeView {
 
         div()
             .id("chonk-root")
-            .key_context(CHONK_CTX)
+            .key_context(if self.edit_mode { CHONK_EDIT_CTX } else { CHONK_CTX })
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &EditCaption, window, cx| {
+                this.edit_caption(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FinishEdit, window, cx| {
+                this.finish_edit(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &DeleteChar, _window, cx| {
+                this.delete_char();
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -537,7 +685,11 @@ impl Render for MemeView {
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
                         let (dx, dy) = this.to_doc(ev.position.x / px(1.0), ev.position.y / px(1.0));
-                        this.selected = this.hit_test(dx, dy);
+                        let new_sel = this.hit_test(dx, dy);
+                        if new_sel != this.selected {
+                            this.selected = new_sel;
+                            this.edit_mode = false; // selection change ends editing
+                        }
                         if let Some(layer) = this.selected {
                             this.drag = Some((layer, ev.position.x / px(1.0), ev.position.y / px(1.0)));
                         }
@@ -595,8 +747,19 @@ impl Render for MemeView {
                     }))
                     .child(canvas(
                         |bounds, _window, _cx| bounds,
-                        move |bounds, _bounds, window, _cx| {
-                            let side = bounds.size.width.min(bounds.size.height);
+                        {
+                            let view = cx.entity().clone();
+                            let fh = self.focus_handle.clone();
+                            let editing = self.edit_mode;
+                            move |bounds, _bounds, window, cx| {
+                                // Route typed characters (IME included) to the
+                                // view's EntityInputHandler while focused.
+                                window.handle_input(
+                                    &fh,
+                                    ElementInputHandler::new(bounds, view.clone()),
+                                    cx,
+                                );
+                                let side = bounds.size.width.min(bounds.size.height);
                             let origin = point(
                                 bounds.origin.x + (bounds.size.width - side) / 2.0,
                                 bounds.origin.y + (bounds.size.height - side) / 2.0,
@@ -620,6 +783,14 @@ impl Render for MemeView {
                                 window.paint_quad(fill(Bounds { origin: point(x0 - t, y0 + h), size: size(w + t + t, t) }, c));
                                 window.paint_quad(fill(Bounds { origin: point(x0 - t, y0), size: size(t, h) }, c));
                                 window.paint_quad(fill(Bounds { origin: point(x0 + w, y0), size: size(t, h) }, c));
+                                // Caret at text end while editing.
+                                if editing {
+                                    window.paint_quad(fill(
+                                        Bounds { origin: point(x0 + w + px(4.0), y0 + h * 0.15), size: size(px(3.0), h * 0.7) },
+                                        rgb(0xf59e0b),
+                                    ));
+                                }
+                            }
                             }
                         },
                     ).size_full()),
@@ -671,6 +842,12 @@ fn main() {
             KeyBinding::new("left", NudgeLeft, Some(CHONK_CTX)),
             KeyBinding::new("right", NudgeRight, Some(CHONK_CTX)),
             KeyBinding::new("space", TogglePlay, Some(CHONK_CTX)),
+            KeyBinding::new("enter", EditCaption, Some(CHONK_CTX)),
+            // While editing, printable keys must NOT match any binding — they
+            // flow to the EntityInputHandler instead.
+            KeyBinding::new("enter", FinishEdit, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("escape", FinishEdit, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("backspace", DeleteChar, Some(CHONK_EDIT_CTX)),
         ]);
         // Focus the view so its key context is live from the first frame.
         view.update(cx, |v, window, cx| window.focus(&v.focus_handle, cx)).ok();
