@@ -31,6 +31,9 @@ pub struct RenderedText {
     pub pixmap: sk::Pixmap,
     /// Font size actually used (may be smaller than requested with `fit_box`).
     pub font_size: f32,
+    /// Where the text block's (0,0) sits inside the pixmap (stroke/shadow
+    /// padding): pixmap point = block point - block_offset.
+    pub block_offset: (f32, f32),
 }
 
 impl Default for TextEngine {
@@ -261,7 +264,70 @@ impl TextEngine {
         paint.set_color(style.fill);
         pm.fill_path(&path, &paint, sk::FillRule::Winding, tx, None);
 
-        Some(RenderedText { pixmap: pm, font_size })
+        Some(RenderedText { pixmap: pm, font_size, block_offset: (left, top) })
+    }
+
+    /// Build a shaped cosmic-text Buffer for caret/hit-test geometry.
+    /// `font_size` must match the size the text was rendered at (use
+    /// RenderedText::font_size — `fit_box` may have shrunk it).
+    fn buffer_for(&mut self, text: &str, style: &TextStyle, font_size: f32) -> Buffer {
+        let attrs = Attrs::new();
+        let attrs = match style.font_family.as_str() {
+            "" | "sans-serif" => attrs.family(cosmic_text::Family::SansSerif),
+            "serif" => attrs.family(cosmic_text::Family::Serif),
+            "monospace" => attrs.family(cosmic_text::Family::Monospace),
+            name => attrs.family(cosmic_text::Family::Name(name)),
+        };
+        let align = match style.align {
+            TextAlign::Left => cosmic_text::Align::Left,
+            TextAlign::Center => cosmic_text::Align::Center,
+            TextAlign::Right => cosmic_text::Align::Right,
+        };
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::relative(font_size, 1.2));
+        if let Some(w) = style.max_width {
+            buffer.set_size(Some(w), None);
+            buffer.set_wrap(Wrap::WordOrGlyph);
+        }
+        buffer.set_text(text, &attrs, Shaping::Advanced, Some(align));
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer
+    }
+
+    /// Caret geometry for a byte index: (x, y_top, height) in the rendered
+    /// pixmap's coordinate space — the space layers draw into.
+    pub fn caret_geometry(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        byte: usize,
+    ) -> Option<(f32, f32, f32)> {
+        let rt = self.render(text, style)?;
+        let byte = byte.min(text.len());
+        let buffer = self.buffer_for(text, style, rt.font_size);
+        let cursor = cosmic_text::Cursor::new(0, byte);
+        let mut last_run_end = None;
+        for run in buffer.layout_runs() {
+            if let Some(x) = run.cursor_position(&cursor) {
+                return Some((
+                    x - rt.block_offset.0,
+                    run.line_top - rt.block_offset.1,
+                    run.line_height,
+                ));
+            }
+            let x_end = run.glyphs.last().map(|g| g.x + g.w).unwrap_or(0.0);
+            last_run_end = Some((x_end, run.line_top, run.line_height));
+        }
+        // Cursor past the final glyph (the common "editing at end" case).
+        last_run_end.map(|(x, t, h)| (x - rt.block_offset.0, t - rt.block_offset.1, h))
+    }
+
+    /// Byte index of the glyph nearest a point in pixmap coordinates.
+    pub fn hit_byte(&mut self, text: &str, style: &TextStyle, x: f32, y: f32) -> Option<usize> {
+        let rt = self.render(text, style)?;
+        let mut buffer = self.buffer_for(text, style, rt.font_size);
+        buffer
+            .hit(x + rt.block_offset.0, y + rt.block_offset.1)
+            .map(|c| c.index)
     }
 }
 

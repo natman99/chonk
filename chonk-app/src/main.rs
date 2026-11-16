@@ -482,7 +482,7 @@ impl MemeView {
 
     fn add_text(&mut self) {
         self.doc.add_text(
-            "new caption",
+            "",
             TextStyle {
                 font_family: "Noto Sans".into(),
                 font_size: 72.0,
@@ -494,6 +494,10 @@ impl MemeView {
             },
         );
         self.selected = Some(self.doc.layers.len() - 1);
+        // Go straight into editing: an empty caption shows its placeholder
+        // box and is pruned if left empty on finish (no ghost layers).
+        self.caret_pos = 0;
+        self.edit_mode = true;
         self.recomposite();
     }
 
@@ -667,58 +671,43 @@ impl MemeView {
         }
     }
 
-    /// Width of the text prefix before the caret (doc px), for caret paint
-    /// and click-to-position. Only valid for unwrapped (single-line) text.
-    fn caret_prefix_width(&mut self, text: &str, style: &TextStyle) -> Option<f32> {
-        if style.max_width.is_some() || self.caret_pos == 0 {
-            return Some(0.0);
+    /// Caret geometry (x, y_top, height) in DOCUMENT coords for the caption
+    /// being edited; None if unavailable (falls back to text-box edge).
+    fn caret_doc_geom(&mut self) -> Option<(f32, f32, f32)> {
+        if !self.edit_mode {
+            return None;
         }
-        let prefix = text.get(..self.caret_pos)?;
-        if prefix.is_empty() {
-            return Some(0.0);
-        }
-        let rt = self.texts.render(prefix, style)?;
-        Some(rt.pixmap.width() as f32)
+        let i = self.selected?;
+        let (text, style) = match self.doc.layers.get(i).map(|l| l.kind.clone()) {
+            Some(LayerKind::Text { text, style }) => (text, style),
+            _ => return None,
+        };
+        let (lx, ly, s) = self
+            .doc
+            .layers
+            .get(i)
+            .map(|l| (l.transform.x, l.transform.y, l.transform.scale.max(0.01)))
+            .unwrap_or((0.0, 0.0, 1.0));
+        let (x, y_top, h) = self.texts.caret_geometry(&text, &style, self.caret_pos)?;
+        Some((lx + x * s, ly + y_top * s, h * s))
     }
 
-    /// Move the caret to the char boundary nearest doc-x within the text
-    /// being edited (binary search over prefix widths).
-    fn position_caret_at(&mut self, doc_x: f32) {
+    /// Move the caret to the glyph nearest a document-space point.
+    fn position_caret_at(&mut self, doc_x: f32, doc_y: f32) {
         let Some(i) = self.selected else { return };
-        let (text, style, lx, scale) = match &self.doc.layers.get(i).map(|l| &l.kind) {
-            Some(LayerKind::Text { text, style }) => {
-                (text.clone(), style.clone(), self.doc.layers[i].transform.x, self.doc.layers[i].transform.scale.max(0.01))
-            }
+        let (text, style) = match self.doc.layers.get(i).map(|l| l.kind.clone()) {
+            Some(LayerKind::Text { text, style }) => (text, style),
             _ => return,
         };
-        if style.max_width.is_some() {
-            return; // wrapped text: prefix-width search is invalid
+        let (lx, ly, s) = self
+            .doc
+            .layers
+            .get(i)
+            .map(|l| (l.transform.x, l.transform.y, l.transform.scale.max(0.01)))
+            .unwrap_or((0.0, 0.0, 1.0));
+        if let Some(idx) = self.texts.hit_byte(&text, &style, (doc_x - lx) / s, (doc_y - ly) / s) {
+            self.caret_pos = floor_char_boundary(&text, idx.min(text.len()));
         }
-        let local = (doc_x - lx) / scale;
-        // Binary search: largest char-boundary index whose prefix width <= local.
-        let mut lo = 0usize;
-        let mut hi = text.len();
-        while lo < hi {
-            let mid = (lo + hi + 1) / 2;
-            let mf = floor_char_boundary(&text, mid);
-            let w = self.caret_prefix_width_for(&text[..mf], &style);
-            if w <= local {
-                lo = mid; // raw index: guarantees progress; floored at the end
-            } else {
-                hi = mid - 1;
-            }
-        }
-        self.caret_pos = floor_char_boundary(&text, lo);
-    }
-
-    fn caret_prefix_width_for(&mut self, prefix: &str, style: &TextStyle) -> f32 {
-        if prefix.is_empty() {
-            return 0.0;
-        }
-        self.texts
-            .render(prefix, style)
-            .map(|rt| rt.pixmap.width() as f32)
-            .unwrap_or(0.0)
     }
 
     /// Zoom by an adaptive factor (gentler at high magnification), anchored
@@ -1053,24 +1042,9 @@ impl Render for MemeView {
             Some((l.transform.x, l.transform.y, w * s, h * s))
         });
 
-        // Caret x (doc coords, layer-scaled) for the caption being edited;
+        // Caret geometry (doc coords) for the caption being edited;
         // None falls back to painting at the text box's right edge.
-        let mut caret_x: Option<f32> = None;
-        if self.edit_mode {
-            if let Some(i) = self.selected {
-                let kind = self.doc.layers.get(i).map(|l| l.kind.clone());
-                let (lx, s) = self
-                    .doc
-                    .layers
-                    .get(i)
-                    .map(|l| (l.transform.x, l.transform.scale.max(0.01)))
-                    .unwrap_or((0.0, 1.0));
-                if let Some(LayerKind::Text { text, style }) = kind {
-                    let pw = self.caret_prefix_width(&text, &style).unwrap_or(0.0);
-                    caret_x = Some(lx + pw * s);
-                }
-            }
-        }
+        let caret_geom = self.caret_doc_geom();
 
         div()
             .id("chonk-root")
@@ -1156,8 +1130,9 @@ impl Render for MemeView {
                 this.toggle_quote();
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &AddText, _window, cx| {
+            .on_action(cx.listener(|this, _: &AddText, window, cx| {
                 this.add_text();
+                window.set_window_title("Chonk — EDITING caption (type · Enter finishes)".into());
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &DeleteLayer, _window, cx| {
@@ -1241,7 +1216,7 @@ impl Render for MemeView {
                         if this.edit_mode && new_sel == this.selected {
                             if let Some(i) = new_sel {
                                 if matches!(this.doc.layers[i].kind, LayerKind::Text { .. }) {
-                                    this.position_caret_at(dx);
+                                    this.position_caret_at(dx, dy);
                                     cx.notify();
                                     return;
                                 }
@@ -1377,7 +1352,7 @@ impl Render for MemeView {
                             let accent = th.accent;
                             let caret = th.caret;
                             let busy = self.busy;
-                            let caret_x = caret_x;
+                            let caret_geom = caret_geom;
                             move |bounds, _bounds, window, cx| {
                                 // Route typed characters (IME included) to the
                                 // view's EntityInputHandler while focused.
@@ -1426,14 +1401,23 @@ impl Render for MemeView {
                                 // Caret while editing: at the caret offset
                                 // (click/arrow positioned), else text end.
                                 if editing {
-                                    let cx0 = match caret_x {
-                                        Some(dx) => origin.x + px(dx * k),
-                                        None => x0 + w + px(4.0),
-                                    };
-                                    window.paint_quad(fill(
-                                        Bounds { origin: point(cx0, y0 + h * 0.15), size: size(px(3.0), h * 0.7) },
-                                        rgb(caret),
-                                    ));
+                                    match caret_geom {
+                                        Some((gx, gy, gh)) => {
+                                            window.paint_quad(fill(
+                                                Bounds {
+                                                    origin: point(origin.x + px(gx * k), origin.y + px(gy * k)),
+                                                    size: size(px(3.0), px(gh * k) * 0.85),
+                                                },
+                                                rgb(caret),
+                                            ));
+                                        }
+                                        None => {
+                                            window.paint_quad(fill(
+                                                Bounds { origin: point(x0 + w + px(4.0), y0 + h * 0.15), size: size(px(3.0), h * 0.7) },
+                                                rgb(caret),
+                                            ));
+                                        }
+                                    }
                                 }
                             }
                             }

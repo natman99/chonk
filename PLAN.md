@@ -48,8 +48,10 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
       canvas (EntityInputHandler + chonk-edit key context; append/backspace,
       IME commits).
 - [x] Caret v2: caret_pos byte offset; ←/→ move it, click-in-text positions it
-      (binary search over prefix widths; single-line text only — wrapped
-      quote text keeps the end-of-text caret). Insert/backspace honor it.
+      via cosmic-text Buffer::hit + LayoutRun::cursor_position (wrapped text
+      and fit_box handled correctly — geometry comes from the real layout,
+      RenderedText carries block padding offset). Insert/backspace honor it.
+      T creates an EMPTY caption and enters edit mode immediately.
 - [ ] Caret v3: text selection (shift+arrows, drag-select, replace selection).
 - [x] Export path: E png / J jpg / W webp / G gif -> ~/Downloads/chonk-<ts>.<ext>.
       Encoding + file write run on the render worker; result shown in title.
