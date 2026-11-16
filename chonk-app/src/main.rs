@@ -284,10 +284,14 @@ impl Render for MemeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let image = self.composited.clone();
         let b = _window.bounds();
-        let side = (b.size.width / px(1.0) - 48.0)
-            .min(b.size.height / px(1.0) - 48.0)
-            .max(1.0);
+        // Canvas element sits inside p_3 padding (12px); the image is a
+        // centered square within it. Mirror the paint closure's math so
+        // mouse->doc mapping and hit-testing line up with what is drawn.
+        let ew = b.size.width / px(1.0) - 24.0;
+        let eh = b.size.height / px(1.0) - 24.0;
+        let side = ew.min(eh).max(1.0);
         self.view_side = side;
+        self.view_origin = (12.0 + (ew - side) / 2.0, 12.0 + (eh - side) / 2.0);
 
         // Selection outline in document coords (converted to window px in the
         // paint closure); recomputed lazily is fine — selection changes rarely.
