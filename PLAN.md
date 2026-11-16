@@ -51,6 +51,9 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
       Encoding + file write run on the render worker; result shown in title.
       File picker dialog still planned.
 - [x] Empty captions are pruned (backspacing a caption away deletes the layer).
+- [x] Zoom/pan: scroll-wheel zoom anchored at cursor, drag empty canvas to pan,
+      =/- keyboard zoom, 0 resets. Pan/zoom are GPU-only (no recomposite).
+      Worker-side downsampled compositing at low zoom still planned.
 - [ ] File open dialog (rfd or portal) once DnD verdict is in.
 - [ ] Zoom/pan: preview-resolution compositing (downsample when zoomed out).
 - [ ] Layer list panel (visibility, reorder, opacity).

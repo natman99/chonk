@@ -7,8 +7,8 @@ use chonk_core::tiny_skia as sk;
 use gpui::{
     App, AsyncApp, Bounds, Context, Corners, ElementInputHandler, EntityInputHandler,
     ExternalPaths, FocusHandle, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, RenderImage, UTF16Selection, Window, WindowBounds, WindowOptions, actions,
-    canvas, div, fill, point, prelude::*, px, rgb, size,
+    MouseUpEvent, RenderImage, ScrollDelta, ScrollEvent, UTF16Selection, Window, WindowBounds,
+    WindowOptions, actions, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
 use std::ops::Range;
@@ -32,7 +32,10 @@ actions!(
         ExportPng,
         ExportJpg,
         ExportWebp,
-        ExportGif
+        ExportGif,
+        ResetView,
+        ZoomIn,
+        ZoomOut
     ]
 );
 
@@ -67,6 +70,11 @@ struct MemeView {
     /// (set each render), used to map mouse coords into document space.
     view_side: f32,
     view_origin: (f32, f32),
+    /// Canvas zoom (1.0 = fit) and pan offset in window px.
+    zoom: f32,
+    pan: (f32, f32),
+    /// Pan gesture in flight: (start_x, start_y, start_pan).
+    pan_drag: Option<(f32, f32, (f32, f32))>,
     quote_mode: bool,
     playing: bool,
     frame: usize,
@@ -228,6 +236,9 @@ impl MemeView {
             dirty_region: None,
             view_side: 0.0,
             view_origin: (0.0, 0.0),
+            zoom: 1.0,
+            pan: (0.0, 0.0),
+            pan_drag: None,
             quote_mode: false,
             playing: false,
             frame: 0,
@@ -493,10 +504,21 @@ impl MemeView {
         }
     }
 
+    /// Zoom by `factor`, anchored at the canvas center (keyboard zoom).
+    fn zoom_at_center(&mut self, factor: f32) {
+        let new_zoom = (self.zoom * factor).clamp(0.1, 8.0);
+        let k = new_zoom / self.zoom;
+        let cx_ = self.view_origin.0 + self.view_side / 2.0;
+        let cy_ = self.view_origin.1 + self.view_side / 2.0;
+        self.pan.0 += (cx_ - self.view_origin.0) * (1.0 - k);
+        self.pan.1 += (cy_ - self.view_origin.1) * (1.0 - k);
+        self.zoom = new_zoom;
+    }
+
     fn finish_edit(&mut self, window: &mut Window) {
         self.edit_mode = false;
         self.prune_empty_caption();
-        window.set_window_title("Chonk — Q quote · T text · Enter edit · arrows nudge · Del delete".into());
+        window.set_window_title("Chonk — Q quote · T text · Enter edit · scroll zoom · drag empty pan · 0 reset".into());
     }
 
     /// An emptied caption is a ghost: remove the layer entirely.
@@ -693,9 +715,15 @@ impl Render for MemeView {
         // mouse->doc mapping and hit-testing line up with what is drawn.
         let ew = b.size.width / px(1.0) - 24.0;
         let eh = b.size.height / px(1.0) - 24.0;
-        let side = ew.min(eh).max(1.0);
+        let base = ew.min(eh).max(1.0);
+        let side = (base * self.zoom).max(40.0);
         self.view_side = side;
-        self.view_origin = (12.0 + (ew - side) / 2.0, 12.0 + (eh - side) / 2.0);
+        self.view_origin = (
+            12.0 + (ew - side) / 2.0 + self.pan.0,
+            12.0 + (eh - side) / 2.0 + self.pan.1,
+        );
+        let side_px = px(side);
+        let origin_px = point(px(self.view_origin.0), px(self.view_origin.1));
 
         // Selection outline in document coords (converted to window px in the
         // paint closure); recomputed lazily is fine — selection changes rarely.
@@ -726,6 +754,19 @@ impl Render for MemeView {
             .on_action(cx.listener(|this, _: &ExportJpg, window, _cx| this.export("jpg", window)))
             .on_action(cx.listener(|this, _: &ExportWebp, window, _cx| this.export("webp", window)))
             .on_action(cx.listener(|this, _: &ExportGif, window, _cx| this.export("gif", window)))
+            .on_action(cx.listener(|this, _: &ResetView, _window, cx| {
+                this.zoom = 1.0;
+                this.pan = (0.0, 0.0);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ZoomIn, _window, cx| {
+                this.zoom_at_center(1.25);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ZoomOut, _window, cx| {
+                this.zoom_at_center(0.8);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -787,10 +828,44 @@ impl Render for MemeView {
                         }
                         if let Some(layer) = this.selected {
                             this.drag = Some((layer, ev.position.x / px(1.0), ev.position.y / px(1.0)));
+                        } else {
+                            // Empty canvas: drag pans the view (GPU-only, no
+                            // recomposite).
+                            this.pan_drag = Some((
+                                ev.position.x / px(1.0),
+                                ev.position.y / px(1.0),
+                                this.pan,
+                            ));
                         }
                         cx.notify();
                     }))
+                    .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
+                        let dy = match ev.delta {
+                            ScrollDelta::Lines(p) => p.y,
+                            ScrollDelta::Pixels(p) => p.y / px(18.0),
+                        };
+                        if dy == 0.0 {
+                            return;
+                        }
+                        let new_zoom = (this.zoom * (dy * 0.18).exp()).clamp(0.1, 8.0);
+                        let k = new_zoom / this.zoom;
+                        // Keep the point under the cursor anchored.
+                        let cx_ = ev.position.x / px(1.0);
+                        let cy_ = ev.position.y / px(1.0);
+                        this.pan.0 += (cx_ - this.view_origin.0) * (1.0 - k);
+                        this.pan.1 += (cy_ - this.view_origin.1) * (1.0 - k);
+                        this.zoom = new_zoom;
+                        cx.notify();
+                    }))
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                        if let Some((sx, sy, sp)) = this.pan_drag {
+                            this.pan = (
+                                sp.0 + ev.position.x / px(1.0) - sx,
+                                sp.1 + ev.position.y / px(1.0) - sy,
+                            );
+                            cx.notify();
+                            return;
+                        }
                         if let Some((layer, lx, ly)) = this.drag.take() {
                             let mut region_ok = false;
                             let mut rect = (0.0, 0.0, 0.0, 0.0);
@@ -825,6 +900,7 @@ impl Render for MemeView {
                     }))
                     .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, _| {
                         this.drag = None;
+                        this.pan_drag = None;
                     }))
                     // Wayland/X11 file drops (gpui turns them into a drag
                     // session carrying ExternalPaths).
@@ -854,11 +930,8 @@ impl Render for MemeView {
                                     ElementInputHandler::new(bounds, view.clone()),
                                     cx,
                                 );
-                                let side = bounds.size.width.min(bounds.size.height);
-                            let origin = point(
-                                bounds.origin.x + (bounds.size.width - side) / 2.0,
-                                bounds.origin.y + (bounds.size.height - side) / 2.0,
-                            );
+                                let side = side_px;
+                                let origin = origin_px;
                             if let Some(img) = &image {
                                 let target = Bounds { origin, size: size(side, side) };
                                 window
@@ -904,7 +977,7 @@ fn main() {
                 },
                 |window, cx| {
                     window.set_window_title(
-                        "Chonk — Q quote · T text · arrows nudge · Del delete · click select · space play"
+                        "Chonk — Q quote · T text · Enter edit · scroll zoom · drag empty pan · E/J/W/G export · space play"
                             .into(),
                     );
                     cx.new(MemeView::new)
@@ -942,6 +1015,9 @@ fn main() {
             KeyBinding::new("j", ExportJpg, Some(CHONK_CTX)),
             KeyBinding::new("w", ExportWebp, Some(CHONK_CTX)),
             KeyBinding::new("g", ExportGif, Some(CHONK_CTX)),
+            KeyBinding::new("0", ResetView, Some(CHONK_CTX)),
+            KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
+            KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they
             // flow to the EntityInputHandler instead.
             KeyBinding::new("enter", FinishEdit, Some(CHONK_EDIT_CTX)),
