@@ -3,6 +3,7 @@
 use chonk_core::document::{Background, Document, LayerKind, Shadow, TextAlign, TextStyle};
 use chonk_core::quote::{QuoteSpec, quote_document};
 use chonk_core::render::Renderer;
+use chonk_core::text::TextEngine;
 use chonk_core::tiny_skia as sk;
 use gpui::{
     App, AsyncApp, Bounds, ClickEvent, Context, Corners, ElementInputHandler, EntityInputHandler,
@@ -29,6 +30,8 @@ actions!(
         EditCaption,
         FinishEdit,
         DeleteChar,
+        CaretLeft,
+        CaretRight,
         ExportPng,
         ExportJpg,
         ExportWebp,
@@ -52,6 +55,27 @@ const CHONK_CTX: &str = "chonk";
 /// Swapped in while editing a caption: printable keys must reach the input
 /// handler instead of firing app shortcuts.
 const CHONK_EDIT_CTX: &str = "chonk-edit";
+
+/// Largest char boundary <= `i` (str::floor_char_boundary is unstable).
+fn floor_char_boundary(s: &str, i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    let mut i = i;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Smallest char boundary >= `i`.
+fn ceil_char_boundary(s: &str, i: usize) -> usize {
+    let mut i = i;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
 
 /// Layer panel width and the gap between canvas and panel (window px).
 const PANEL_W: f32 = 260.0;
@@ -154,6 +178,10 @@ struct MemeView {
     dark: bool,
     /// True while the worker is encoding an export — draws a badge.
     busy: bool,
+    /// Caret byte-offset within the caption being edited (always a char
+    /// boundary). UI-side text measurement uses `texts`.
+    caret_pos: usize,
+    texts: TextEngine,
     focus_handle: FocusHandle,
 }
 
@@ -338,6 +366,8 @@ impl MemeView {
             status: None,
             dark: true,
             busy: false,
+            caret_pos: 0,
+            texts: TextEngine::new(),
             focus_handle: cx.focus_handle(),
         };
         v.recomposite();
@@ -630,10 +660,65 @@ impl MemeView {
     }
 
     fn edit_caption(&mut self, window: &mut Window) {
-        if self.selected_text().is_some() {
+        if let Some(t) = self.selected_text() {
+            self.caret_pos = t.len();
             self.edit_mode = true;
             window.set_window_title("Chonk — EDITING caption (type · Enter finishes)".into());
         }
+    }
+
+    /// Width of the text prefix before the caret (doc px), for caret paint
+    /// and click-to-position. Only valid for unwrapped (single-line) text.
+    fn caret_prefix_width(&mut self, text: &str, style: &TextStyle) -> Option<f32> {
+        if style.max_width.is_some() || self.caret_pos == 0 {
+            return Some(0.0);
+        }
+        let prefix = text.get(..self.caret_pos)?;
+        if prefix.is_empty() {
+            return Some(0.0);
+        }
+        let rt = self.texts.render(prefix, style)?;
+        Some(rt.pixmap.width() as f32)
+    }
+
+    /// Move the caret to the char boundary nearest doc-x within the text
+    /// being edited (binary search over prefix widths).
+    fn position_caret_at(&mut self, doc_x: f32) {
+        let Some(i) = self.selected else { return };
+        let (text, style, lx, scale) = match &self.doc.layers.get(i).map(|l| &l.kind) {
+            Some(LayerKind::Text { text, style }) => {
+                (text.clone(), style.clone(), self.doc.layers[i].transform.x, self.doc.layers[i].transform.scale.max(0.01))
+            }
+            _ => return,
+        };
+        if style.max_width.is_some() {
+            return; // wrapped text: prefix-width search is invalid
+        }
+        let local = (doc_x - lx) / scale;
+        // Binary search: largest char-boundary index whose prefix width <= local.
+        let mut lo = 0usize;
+        let mut hi = text.len();
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            let mf = floor_char_boundary(&text, mid);
+            let w = self.caret_prefix_width_for(&text[..mf], &style);
+            if w <= local {
+                lo = mid; // raw index: guarantees progress; floored at the end
+            } else {
+                hi = mid - 1;
+            }
+        }
+        self.caret_pos = floor_char_boundary(&text, lo);
+    }
+
+    fn caret_prefix_width_for(&mut self, prefix: &str, style: &TextStyle) -> f32 {
+        if prefix.is_empty() {
+            return 0.0;
+        }
+        self.texts
+            .render(prefix, style)
+            .map(|rt| rt.pixmap.width() as f32)
+            .unwrap_or(0.0)
     }
 
     /// Zoom by an adaptive factor (gentler at high magnification), anchored
@@ -768,9 +853,15 @@ impl MemeView {
     fn delete_char(&mut self) {
         if let Some(i) = self.selected {
             if let Some(LayerKind::Text { text, .. }) = self.doc.layers.get_mut(i).map(|l| &mut l.kind) {
-                if let Some(pos) = text.chars().next_back().map(|c| text.len() - c.len_utf8()) {
-                    text.remove(pos);
-                    self.invalidate();
+                let pos = self.caret_pos.min(text.len());
+                if pos > 0 {
+                    let prev = floor_char_boundary(text, pos - 1);
+                    let prev = if prev == pos { prev.saturating_sub(1) } else { prev };
+                    if text.is_char_boundary(prev) {
+                        text.remove(prev);
+                        self.caret_pos = prev;
+                        self.invalidate();
+                    }
                 }
             }
         }
@@ -879,11 +970,17 @@ impl EntityInputHandler for MemeView {
             {
                 match range {
                     Some(r) => {
-                        let start = r.start.min(t.len());
-                        let end = r.end.max(start).min(t.len());
+                        let start = floor_char_boundary(t, r.start.min(t.len()));
+                        let end = ceil_char_boundary(t, r.end.max(start).min(t.len()));
                         t.replace_range(start..end, text);
+                        self.caret_pos = start + text.len();
                     }
-                    None => t.push_str(text),
+                    None => {
+                        let at = self.caret_pos.min(t.len());
+                        let at = floor_char_boundary(t, at);
+                        t.insert_str(at, text);
+                        self.caret_pos = at + text.len();
+                    }
                 }
                 self.invalidate();
                 cx.notify();
@@ -956,6 +1053,25 @@ impl Render for MemeView {
             Some((l.transform.x, l.transform.y, w * s, h * s))
         });
 
+        // Caret x (doc coords, layer-scaled) for the caption being edited;
+        // None falls back to painting at the text box's right edge.
+        let mut caret_x: Option<f32> = None;
+        if self.edit_mode {
+            if let Some(i) = self.selected {
+                let kind = self.doc.layers.get(i).map(|l| l.kind.clone());
+                let (lx, s) = self
+                    .doc
+                    .layers
+                    .get(i)
+                    .map(|l| (l.transform.x, l.transform.scale.max(0.01)))
+                    .unwrap_or((0.0, 1.0));
+                if let Some(LayerKind::Text { text, style }) = kind {
+                    let pw = self.caret_prefix_width(&text, &style).unwrap_or(0.0);
+                    caret_x = Some(lx + pw * s);
+                }
+            }
+        }
+
         div()
             .id("chonk-root")
             .key_context(if self.edit_mode { CHONK_EDIT_CTX } else { CHONK_CTX })
@@ -970,6 +1086,19 @@ impl Render for MemeView {
             }))
             .on_action(cx.listener(|this, _: &DeleteChar, _window, cx| {
                 this.delete_char();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &CaretLeft, _window, cx| {
+                if let Some(t) = this.selected_text() {
+                    let pos = this.caret_pos.min(t.len());
+                    this.caret_pos = if pos == 0 { 0 } else { floor_char_boundary(t, pos - 1) };
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &CaretRight, _window, cx| {
+                if let Some(t) = this.selected_text() {
+                    this.caret_pos = ceil_char_boundary(t, (this.caret_pos + 1).min(t.len()));
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ExportPng, window, cx| {
@@ -1107,6 +1236,17 @@ impl Render for MemeView {
                                 new_sel = new_sel.map(|s| if s > old { s - 1 } else { s });
                             }
                         }
+                        // Clicking the caption being edited positions the
+                        // caret instead of dragging (exit editing to drag).
+                        if this.edit_mode && new_sel == this.selected {
+                            if let Some(i) = new_sel {
+                                if matches!(this.doc.layers[i].kind, LayerKind::Text { .. }) {
+                                    this.position_caret_at(dx);
+                                    cx.notify();
+                                    return;
+                                }
+                            }
+                        }
                         if new_sel != this.selected {
                             this.selected = new_sel;
                             this.edit_mode = false; // selection change ends editing
@@ -1237,6 +1377,7 @@ impl Render for MemeView {
                             let accent = th.accent;
                             let caret = th.caret;
                             let busy = self.busy;
+                            let caret_x = caret_x;
                             move |bounds, _bounds, window, cx| {
                                 // Route typed characters (IME included) to the
                                 // view's EntityInputHandler while focused.
@@ -1282,10 +1423,15 @@ impl Render for MemeView {
                                 window.paint_quad(fill(Bounds { origin: point(x0 - t, y0 + h), size: size(w + t + t, t) }, c));
                                 window.paint_quad(fill(Bounds { origin: point(x0 - t, y0), size: size(t, h) }, c));
                                 window.paint_quad(fill(Bounds { origin: point(x0 + w, y0), size: size(t, h) }, c));
-                                // Caret at text end while editing.
+                                // Caret while editing: at the caret offset
+                                // (click/arrow positioned), else text end.
                                 if editing {
+                                    let cx0 = match caret_x {
+                                        Some(dx) => origin.x + px(dx * k),
+                                        None => x0 + w + px(4.0),
+                                    };
                                     window.paint_quad(fill(
-                                        Bounds { origin: point(x0 + w + px(4.0), y0 + h * 0.15), size: size(px(3.0), h * 0.7) },
+                                        Bounds { origin: point(cx0, y0 + h * 0.15), size: size(px(3.0), h * 0.7) },
                                         rgb(caret),
                                     ));
                                 }
@@ -1495,6 +1641,8 @@ fn main() {
             KeyBinding::new("enter", FinishEdit, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("escape", FinishEdit, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("backspace", DeleteChar, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("left", CaretLeft, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("right", CaretRight, Some(CHONK_EDIT_CTX)),
         ]);
         // Focus the view so its key context is live from the first frame.
         view.update(cx, |v, window, cx| window.focus(&v.focus_handle, cx)).ok();

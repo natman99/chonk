@@ -35,6 +35,7 @@ GIF exports animate when the document contains an animated layer.
 | Toggle quote-card mode | `Q` |
 | Add caption | `T` |
 | Edit selected caption | `Enter` (finish with `Enter`/`Esc`) |
+| Move caret while editing | `←` / `→`, or click in the text |
 | Delete selected layer | `Del` / `Backspace` |
 | Nudge selected layer | arrow keys (10 px) |
 | Selected layer opacity | `]` up · `[` down (5% steps) |

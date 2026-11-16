@@ -46,7 +46,11 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
 ## Planned
 - [x] In-app text editing (v1): Enter edits the selected caption live on the
       canvas (EntityInputHandler + chonk-edit key context; append/backspace,
-      IME commits). v2 ideas: caret positioning, selection, per-glyph editing.
+      IME commits).
+- [x] Caret v2: caret_pos byte offset; ←/→ move it, click-in-text positions it
+      (binary search over prefix widths; single-line text only — wrapped
+      quote text keeps the end-of-text caret). Insert/backspace honor it.
+- [ ] Caret v3: text selection (shift+arrows, drag-select, replace selection).
 - [x] Export path: E png / J jpg / W webp / G gif -> ~/Downloads/chonk-<ts>.<ext>.
       Encoding + file write run on the render worker; result shown in title.
       File picker dialog still planned.
