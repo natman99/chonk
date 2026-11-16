@@ -71,8 +71,8 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
 - [x] Layer opacity: `]`/`[` adjust selected layer (5% steps, clamp .05..1),
       bar per row in the panel.
 - [ ] Layer panel v2: drag-to-reorder, slider-drag opacity.
-- [ ] Spinner/progress overlay for multi-second ops (big GIF import,
-      huge exports): compositing worker reports; UI shows indicator.
+- [x] Busy badge: accent square in canvas corner while the worker encodes an
+      export (set on dispatch, cleared on worker Status; handlers notify).
 - [ ] Windows support check (gpui-pre is cross-platform; CI later).
 
 ## Tested-out / rejected

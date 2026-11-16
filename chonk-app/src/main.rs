@@ -152,6 +152,8 @@ struct MemeView {
     status: Option<String>,
     /// Dark theme by default; Ctrl+T toggles.
     dark: bool,
+    /// True while the worker is encoding an export — draws a badge.
+    busy: bool,
     focus_handle: FocusHandle,
 }
 
@@ -335,6 +337,7 @@ impl MemeView {
             edit_mode: false,
             status: None,
             dark: true,
+            busy: false,
             focus_handle: cx.focus_handle(),
         };
         v.recomposite();
@@ -356,6 +359,7 @@ impl MemeView {
                     Ok(WorkerMsg::Status(msg)) => {
                         let _ = this.update(cx, |v, _cx| {
                             eprintln!("[chonk] {msg}");
+                            v.busy = false;
                             v.status = Some(msg);
                         });
                     }
@@ -691,6 +695,7 @@ impl MemeView {
             scale: 1.0,
         };
         if self.job_tx.send(job).is_ok() {
+            self.busy = true;
             self.status = Some(format!("exporting {path}…"));
         }
     }
@@ -967,10 +972,22 @@ impl Render for MemeView {
                 this.delete_char();
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &ExportPng, window, _cx| this.export("png", window)))
-            .on_action(cx.listener(|this, _: &ExportJpg, window, _cx| this.export("jpg", window)))
-            .on_action(cx.listener(|this, _: &ExportWebp, window, _cx| this.export("webp", window)))
-            .on_action(cx.listener(|this, _: &ExportGif, window, _cx| this.export("gif", window)))
+            .on_action(cx.listener(|this, _: &ExportPng, window, cx| {
+                this.export("png", window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ExportJpg, window, cx| {
+                this.export("jpg", window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ExportWebp, window, cx| {
+                this.export("webp", window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ExportGif, window, cx| {
+                this.export("gif", window);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ResetView, _window, cx| {
                 this.zoom = 1.0;
                 this.pan = (0.0, 0.0);
@@ -1219,6 +1236,7 @@ impl Render for MemeView {
                             let border = th.border;
                             let accent = th.accent;
                             let caret = th.caret;
+                            let busy = self.busy;
                             move |bounds, _bounds, window, cx| {
                                 // Route typed characters (IME included) to the
                                 // view's EntityInputHandler while focused.
@@ -1242,6 +1260,15 @@ impl Render for MemeView {
                             window.paint_quad(fill(Bounds { origin: point(origin.x - bt, origin.y + side), size: size(side + bt + bt, bt) }, bc));
                             window.paint_quad(fill(Bounds { origin: point(origin.x - bt, origin.y), size: size(bt, side) }, bc));
                             window.paint_quad(fill(Bounds { origin: point(origin.x + side, origin.y), size: size(bt, side) }, bc));
+                            // Busy badge: accent square in the canvas' top-right
+                            // while the worker encodes an export.
+                            if busy {
+                                let s = px(10.0);
+                                window.paint_quad(fill(
+                                    Bounds { origin: point(origin.x + side - s - px(6.0), origin.y + px(6.0)), size: size(s, s) },
+                                    rgb(accent),
+                                ));
+                            }
                             // Selection outline: four 2px quads in canvas space.
                             if let Some((rx, ry, rw, rh)) = sel_rect {
                                 let k = side / px(1080.0); // doc px -> window px (f32 ratio)
