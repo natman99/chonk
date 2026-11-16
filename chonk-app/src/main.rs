@@ -212,8 +212,14 @@ fn layer_size_of(doc: &Document, renderer: &mut Renderer, i: usize) -> Option<(f
             (pm.width() as f32, pm.height() as f32)
         }
         LayerKind::Text { text, style } => {
-            let rt = renderer.text.render(text, style)?;
-            (rt.pixmap.width() as f32, rt.pixmap.height() as f32)
+            match renderer.text.render(text, style) {
+                Some(rt) if rt.pixmap.width() > 0 && rt.pixmap.height() > 0 => {
+                    (rt.pixmap.width() as f32, rt.pixmap.height() as f32)
+                }
+                // Empty caption: placeholder box so it still has a selection
+                // outline and stays clickable while being edited.
+                _ => ((style.font_size * 2.0).max(60.0), style.font_size * 1.2),
+            }
         }
     })
 }
