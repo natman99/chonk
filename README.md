@@ -39,6 +39,9 @@ GIF exports animate when the document contains an animated layer.
 | Delete selected layer | `Del` / `Backspace` |
 | Nudge selected layer | arrow keys (10 px) |
 | Selected layer opacity | `]` up · `[` down (5% steps) |
+| Selected layer blend mode | `,` prev · `.` next (16 modes) |
+| Mark layer as template slot | `S` (or the `[ ]` tag in the panel) |
+| Undo / redo | `Ctrl+Z` · `Ctrl+Y` / `Ctrl+Shift+Z` |
 | Toggle light/dark theme | `Ctrl+T` |
 | Play / pause GIF | `Space` |
 | Export quick | `E` `J` `W` `G` |
@@ -71,7 +74,29 @@ Right side, topmost layer first:
 - `◉` / `◎` toggle visibility.
 - `▲` / `▼` reorder.
 - A small bar shows each layer's opacity (`]`/`[` adjust the selected one).
+- Blend mode short name (`.`/`,` cycle the selected one).
+- `[slotname]` tag marks fillable template slots (`S` toggles).
+- **EXTRACT PALETTE** pulls up to 8 dominant colors from the composite;
+  click a swatch to recolor the selected caption to match the image.
 - `✕` delete.
+
+## Templates & batch filling
+
+A `.chonk` file with slots is a template. Mark text/image slots with `S`,
+save with `Ctrl+S`, share it like any file (a git repo of templates works
+great — text-only templates are plain JSON and diff cleanly).
+
+Fill from the CLI:
+
+```
+chonk-fill template.chonk --list                       # show slots
+chonk-fill template.chonk --set top="CHONK MODE" \
+    --set avatar=face.png --out meme.png
+```
+
+Values that name an existing file fill image slots (scaled to the slot's
+box); everything else fills text slots. Loop it over a folder or a CSV
+for batch memes.
 
 ## Themes
 

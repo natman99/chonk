@@ -76,6 +76,19 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
       sync with every feature landing.
 - [x] Layer opacity: `]`/`[` adjust selected layer (5% steps, clamp .05..1),
       bar per row in the panel.
+- [x] Undo/redo: snapshot history (cap 64), tagged coalescing for held-key
+      bursts, one step per edit session. Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z.
+- [x] .chonk document format: versioned pretty JSON + base64 PNG payloads
+      (chonk-core/src/save.rs); Ctrl+S/Ctrl+O/DnD wired; pixel-equality
+      roundtrip test.
+- [x] Blend modes: 16 modes per layer (`,`/`.` cycle, panel shows short name,
+      persisted in .chonk).
+- [x] Palette extraction: median-cut over the composite (chonk-core/src/
+      palette.rs) + EXTRACT PALETTE button and swatch recolor in the panel.
+- [x] Template slots: `S` tags the selected layer (text/image slot, auto
+      slotN name, `[name]` tag in panel), slots persist in .chonk,
+      `chonk-fill` CLI fills by name (--list/--set/--out) — verified
+      end-to-end (template JSON -> filled rendered meme).
 - [ ] Layer panel v2: drag-to-reorder, slider-drag opacity.
 - [x] Busy badge: accent square in canvas corner while the worker encodes an
       export (set on dispatch, cleared on worker Status; handlers notify).

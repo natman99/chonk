@@ -183,9 +183,13 @@ aware line breaking. Do this BEFORE Cluster 6-warp and 7-glyph-explosion.
 
 ## Build order (dependency-respecting)
 1. **Undo/redo + .chonk + templates** (Cluster 2) — everything else is
-   unsafe and unsharable without it. **IN PROGRESS.**
+   unsafe and unsharable without it. **DONE** (undo/redo, .chonk format,
+   named text/image slots with `S` tagging, `chonk-fill` CLI with
+   `--list`/`--set`/`--out`, roundtrip + fill tests).
 2. **Blend modes + palette extraction** (3, 10) — cheap, immediate range.
-   **IN PROGRESS (same sprint).**
+   **DONE** (16 tiny-skia blend modes via `,`/`.`; median-cut palette
+   extraction with swatch recolor; `best_contrast` helper ready for
+   smart text fill in step 4).
 3. **Fry engine + artifact/blur presets** (1) — the signature feature,
    pure codecs, no ML.
 4. **Saliency/contrast analysis + placement suggestions + impact mode +

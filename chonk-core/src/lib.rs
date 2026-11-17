@@ -10,11 +10,13 @@ pub mod quote;
 pub mod render;
 pub mod palette;
 pub mod save;
+pub mod template;
 pub mod svg;
 pub mod text;
 
 pub use document::{
-    Background, BlendMode, Document, Layer, LayerKind, Shadow, TextAlign, TextStyle, Transform,
+    Background, BlendMode, Document, Layer, LayerKind, Shadow, Slot, SlotKind, TextAlign, TextStyle,
+    Transform,
 };
 pub use quote::{QuoteBackground, QuoteSpec, quote_document};
 pub use render::Renderer;

@@ -323,3 +323,36 @@ fn palette_extraction_finds_dominant() {
     let (br, bg2, _) = u8(best);
     assert!(bg2 > 150 || br > 150);
 }
+
+#[test]
+fn template_slots_roundtrip_and_fill() {
+    use chonk_core::template;
+    use chonk_core::{LayerKind, Slot, SlotKind, TextStyle};
+    let mut doc = Document::new(300, 200);
+    doc.add_image(solid(300, 200, sk::Color::from_rgba8(30, 30, 30, 255)));
+    let t = doc.add_text("placeholder", TextStyle::default());
+    t.slot = Some(Slot { name: "caption".into(), kind: SlotKind::Text });
+    let img = doc.add_image(solid(100, 80, sk::Color::from_rgba8(255, 0, 0, 255)));
+    img.slot = Some(Slot { name: "avatar".into(), kind: SlotKind::Image });
+
+    // Slots survive a .chonk roundtrip.
+    let text = chonk_core::save::to_json(&doc).unwrap();
+    let mut doc2 = chonk_core::save::from_json(&text).unwrap();
+    assert_eq!(template::slot_names(&doc2).len(), 2);
+
+    // Fill by name.
+    assert!(template::fill_text(&mut doc2, "caption", "real words"));
+    assert!(template::fill_image(&mut doc2, "avatar", &solid(50, 40, sk::Color::from_rgba8(0, 255, 0, 255))));
+    assert!(!template::fill_text(&mut doc2, "nope", "x"));
+    // Image slot kept its display size (scaled, not swapped raw).
+    for l in &doc2.layers {
+        if let (Some(s), LayerKind::Image { pixmap }) = (&l.slot, &l.kind) {
+            if s.name == "avatar" {
+                assert_eq!((pixmap.width(), pixmap.height()), (100, 80));
+            }
+        }
+    }
+    // Renders fine.
+    let pm = chonk_core::render::Renderer::new().composite(&doc2);
+    assert_eq!(pm.width(), 300);
+}

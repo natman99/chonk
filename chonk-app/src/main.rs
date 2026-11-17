@@ -50,6 +50,7 @@ actions!(
         OpacityDown,
         BlendPrev,
         BlendNext,
+        ToggleSlot,
     ]
 );
 
@@ -1235,6 +1236,10 @@ impl Render for MemeView {
                 this.cycle_blend(1);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ToggleSlot, _window, cx| {
+                this.toggle_slot();
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -1616,6 +1621,20 @@ impl MemeView {
                         .child(l.blend.short_name()),
                 )
                 .child(
+                    // Slot tag: this layer is a fillable template slot.
+                    div()
+                        .id(SharedString::from(format!("slot{i}")))
+                        .cursor_pointer()
+                        .text_size(px(10.0))
+                        .text_color(rgb(if l.slot.is_some() { th.accent } else { th.border }))
+                        .child(l.slot.as_ref().map(|s| format!("[{}]", s.name)).unwrap_or_else(|| "[ ]".into()))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.selected = Some(i);
+                            this.toggle_slot();
+                            cx.notify();
+                        })),
+                )
+                .child(
                     // Opacity bar (keyboard [ / ] adjusts the selected layer).
                     div()
                         .w(px(40.0))
@@ -1742,6 +1761,46 @@ impl MemeView {
         }
     }
 
+    /// Mark/unmark the selected layer as a template slot (S).
+    fn toggle_slot(&mut self) {
+        let Some(i) = self.selected else { return };
+        // SVG slots have no fill path yet — don't touch history at all.
+        match self.doc.layers.get(i).map(|l| &l.kind) {
+            Some(chonk_core::LayerKind::Svg { .. }) | None => return,
+            _ => {}
+        }
+        self.snapshot();
+        // First free slotN name (computed before the mutable borrow below).
+        let used: Vec<String> = self
+            .doc
+            .layers
+            .iter()
+            .filter_map(|x| x.slot.as_ref().map(|s| s.name.clone()))
+            .collect();
+        if let Some(l) = self.doc.layers.get_mut(i) {
+            if l.slot.is_some() {
+                l.slot = None;
+            } else {
+                let kind = match &l.kind {
+                    chonk_core::LayerKind::Text { .. } => chonk_core::SlotKind::Text,
+                    chonk_core::LayerKind::Image { .. }
+                    | chonk_core::LayerKind::AnimatedImage { .. } => chonk_core::SlotKind::Image,
+                    chonk_core::LayerKind::Svg { .. } => return,
+                };
+                let mut n = 1;
+                let name = loop {
+                    let cand = format!("slot{n}");
+                    if !used.contains(&cand) {
+                        break cand;
+                    }
+                    n += 1;
+                };
+                l.slot = Some(chonk_core::Slot { name, kind });
+            }
+            self.invalidate();
+        }
+    }
+
     /// Cycle the selected layer's blend mode (dir = +1 / -1 through CYCLE).
     fn cycle_blend(&mut self, dir: i32) {
         if let Some(i) = self.selected {
@@ -1836,6 +1895,7 @@ fn main() {
             KeyBinding::new("[", OpacityDown, Some(CHONK_CTX)),
             KeyBinding::new(".", BlendNext, Some(CHONK_CTX)),
             KeyBinding::new(",", BlendPrev, Some(CHONK_CTX)),
+            KeyBinding::new("s", ToggleSlot, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they

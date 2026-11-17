@@ -3,8 +3,8 @@
 //! image-free documents (templates!) are human-readable and git-diffable.
 
 use crate::document::{
-    AnimatedImage, Background, BlendMode, Document, Layer, LayerKind, Shadow, TextAlign, TextStyle,
-    Transform,
+    AnimatedImage, Background, BlendMode, Document, Layer, LayerKind, Shadow, Slot, SlotKind,
+    TextAlign, TextStyle, Transform,
 };
 use crate::tiny_skia as sk;
 use serde::{Deserialize, Serialize};
@@ -106,6 +106,8 @@ struct SavedLayer {
     opacity: f32,
     visible: bool,
     blend: u8,
+    #[serde(default)]
+    slot: Option<(String, u8)>, // (name, 0=text / 1=image)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -204,6 +206,9 @@ fn save_layer(l: &Layer) -> Result<SavedLayer, String> {
         opacity: l.opacity,
         visible: l.visible,
         blend: BlendMode::CYCLE.iter().position(|b| *b == l.blend).unwrap_or(0) as u8,
+        slot: l.slot.as_ref().map(|s| {
+            (s.name.clone(), if s.kind == SlotKind::Text { 0 } else { 1 })
+        }),
     })
 }
 
@@ -228,6 +233,10 @@ fn load_layer(l: SavedLayer) -> Result<Layer, String> {
         opacity: l.opacity,
         visible: l.visible,
         blend: BlendMode::CYCLE.get(l.blend as usize).copied().unwrap_or(BlendMode::Normal),
+        slot: l.slot.map(|(name, k)| Slot {
+            name,
+            kind: if k == 0 { SlotKind::Text } else { SlotKind::Image },
+        }),
     })
 }
 

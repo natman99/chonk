@@ -53,7 +53,7 @@ pub fn extract(pm: &sk::Pixmap, n: usize) -> Vec<sk::Color> {
                 let ch = (0..3).max_by_key(|&c| ranges[c]).unwrap();
                 (i, ch, ranges[ch], b.len())
             })
-            .max_by_key(|&(_, ch, range, len)| (range, len))
+            .max_by_key(|&(_, _ch, range, len)| (range, len))
         {
             Some((i, ch, _, _)) => (i, ch),
             None => break,

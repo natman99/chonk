@@ -200,11 +200,29 @@ pub struct Layer {
     pub opacity: f32,
     pub visible: bool,
     pub blend: BlendMode,
+    /// Template slot: fillable by name (see template.rs). A document
+    /// with slots is a template; filling one produces a meme.
+    pub slot: Option<Slot>,
+}
+
+/// A named, fillable slot in a template document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Slot {
+    pub name: String,
+    pub kind: SlotKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SlotKind {
+    /// Fill with a string (replaces the caption text).
+    Text,
+    /// Fill with an image (scaled to the slot's current display box).
+    Image,
 }
 
 impl Layer {
     pub fn new(kind: LayerKind) -> Self {
-        Self { kind, transform: Transform::default(), opacity: 1.0, visible: true, blend: BlendMode::Normal }
+        Self { kind, transform: Transform::default(), opacity: 1.0, visible: true, blend: BlendMode::Normal, slot: None }
     }
 }
 
