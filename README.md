@@ -39,6 +39,7 @@ GIF exports animate when the document contains an animated layer.
 | Edit selected caption | `Enter` (finish with `Enter`/`Esc`) |
 | Move caret while editing | `←` / `→`, or click in the text |
 | Paste text into a caption | `Ctrl+V` while editing (newlines kept) |
+| Undo / redo **text** while editing | `Ctrl+Z` / `Ctrl+Y` (batched by typing burst; leaves the rest of the canvas alone) |
 | Delete selected layer | `Del` / `Backspace` |
 | Nudge selected layer | arrow keys (10 px) |
 | Selected layer opacity | `]` up · `[` down (5% steps) |

@@ -57,6 +57,8 @@ actions!(
         Paste,
         CancelPending,
         PasteText,
+        UndoText,
+        RedoText,
     ]
 );
 
@@ -164,6 +166,13 @@ struct MemeView {
     layer_clip: Option<chonk_core::Layer>,
     /// T is armed and waiting for the placement click.
     pending_text_place: bool,
+    /// Per-edit-session text history: (text, caret) snapshots taken at
+    /// BATCH boundaries (a burst of same-kind edits within 600ms = one
+    /// batch). Ctrl+Z while editing walks these and never touches the
+    /// canvas undo stack or document structure.
+    text_undo: Vec<(String, usize)>,
+    text_redo: Vec<(String, usize)>,
+    last_text_edit: Option<(std::time::Instant, bool /* was_insert */)>,
     job_tx: std::sync::mpsc::Sender<RenderJob>,
     result_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<WorkerMsg>>>,
     seq: u64,
@@ -382,6 +391,9 @@ impl MemeView {
             palette: Vec::new(),
             layer_clip: None,
             pending_text_place: false,
+            text_undo: Vec::new(),
+            text_redo: Vec::new(),
+            last_text_edit: None,
             job_tx,
             result_rx: Arc::new(std::sync::Mutex::new(rr)),
             seq: 0,
@@ -878,8 +890,70 @@ impl MemeView {
         if let Some(len) = len {
             // One undo step per editing session, not per keystroke.
             self.snapshot();
+            self.text_undo.clear();
+            self.text_redo.clear();
+            self.last_text_edit = None;
             self.caret_pos = len;
             self.edit_mode = true;
+        }
+    }
+
+    /// Text-batch bookkeeping: snapshot the caption at batch boundaries
+    /// only, so undo steps back over whole bursts (a typed word, a held
+    /// backspace), not single keystrokes. `is_insert` distinguishes
+    /// typing from deleting; a >600ms gap or a kind flip starts a batch.
+    fn begin_text_batch(&mut self, is_insert: bool) {
+        let Some(i) = self.selected else { return };
+        let now = std::time::Instant::now();
+        let fresh = match self.last_text_edit {
+            Some((t, was_insert)) => {
+                was_insert != is_insert || now.duration_since(t) > Duration::from_millis(600)
+            }
+            None => true,
+        };
+        self.last_text_edit = Some((now, is_insert));
+        if fresh {
+            if let Some(LayerKind::Text { text, .. }) =
+                self.doc.layers.get(i).map(|l| &l.kind)
+            {
+                self.text_undo.push((text.clone(), self.caret_pos));
+                self.text_redo.clear();
+                if self.text_undo.len() > 128 {
+                    self.text_undo.remove(0);
+                }
+            }
+        }
+    }
+
+    /// Ctrl+Z while editing: undo one text batch in the caption only.
+    /// Deliberately does NOT touch the canvas undo stack or the layer.
+    fn undo_text(&mut self) {
+        let Some(i) = self.selected else { return };
+        let Some((prev, caret)) = self.text_undo.pop() else { return };
+        if let Some(LayerKind::Text { text, .. }) =
+            self.doc.layers.get_mut(i).map(|l| &mut l.kind)
+        {
+            self.text_redo.push((text.clone(), self.caret_pos));
+            *text = prev;
+            self.caret_pos = caret.min(text.len());
+            // Next edit must start a fresh batch, not merge into the
+            // undone one.
+            self.last_text_edit = None;
+            self.invalidate();
+        }
+    }
+
+    fn redo_text(&mut self) {
+        let Some(i) = self.selected else { return };
+        let Some((next, caret)) = self.text_redo.pop() else { return };
+        if let Some(LayerKind::Text { text, .. }) =
+            self.doc.layers.get_mut(i).map(|l| &mut l.kind)
+        {
+            self.text_undo.push((text.clone(), self.caret_pos));
+            *text = next;
+            self.caret_pos = caret.min(text.len());
+            self.last_text_edit = None;
+            self.invalidate();
         }
     }
 
@@ -1072,16 +1146,18 @@ impl MemeView {
 
     fn delete_char(&mut self) {
         if let Some(i) = self.selected {
+            let pos = self.caret_pos.min(self.selected_text().map_or(0, |t| t.len()));
+            if pos == 0 {
+                return;
+            }
+            self.begin_text_batch(false);
             if let Some(LayerKind::Text { text, .. }) = self.doc.layers.get_mut(i).map(|l| &mut l.kind) {
-                let pos = self.caret_pos.min(text.len());
-                if pos > 0 {
-                    let prev = floor_char_boundary(text, pos - 1);
-                    let prev = if prev == pos { prev.saturating_sub(1) } else { prev };
-                    if text.is_char_boundary(prev) {
-                        text.remove(prev);
-                        self.caret_pos = prev;
-                        self.invalidate();
-                    }
+                let prev = floor_char_boundary(text, pos - 1);
+                let prev = if prev == pos { prev.saturating_sub(1) } else { prev };
+                if text.is_char_boundary(prev) {
+                    text.remove(prev);
+                    self.caret_pos = prev;
+                    self.invalidate();
                 }
             }
         }
@@ -1184,6 +1260,7 @@ impl EntityInputHandler for MemeView {
         if !self.edit_mode || text.is_empty() {
             return;
         }
+        self.begin_text_batch(true);
         if let Some(i) = self.selected {
             if let Some(LayerKind::Text { text: t, .. }) =
                 self.doc.layers.get_mut(i).map(|l| &mut l.kind)
@@ -1309,6 +1386,14 @@ impl Render for MemeView {
                 if let Some(t) = this.selected_text() {
                     this.caret_pos = ceil_char_boundary(t, (this.caret_pos + 1).min(t.len()));
                 }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &UndoText, _window, cx| {
+                this.undo_text();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &RedoText, _window, cx| {
+                this.redo_text();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &PasteText, window, cx| {
@@ -2155,6 +2240,9 @@ fn main() {
             KeyBinding::new("left", CaretLeft, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("right", CaretRight, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("ctrl-v", PasteText, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("ctrl-z", UndoText, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("ctrl-y", RedoText, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("ctrl-shift-z", RedoText, Some(CHONK_EDIT_CTX)),
         ]);
         // Focus the view so its key context is live from the first frame.
         view.update(cx, |v, window, cx| window.focus(&v.focus_handle, cx)).ok();
