@@ -32,6 +32,7 @@ actions!(
         TogglePlay,
         EditCaption,
         FinishEdit,
+        InsertNewline,
         DeleteChar,
         CaretLeft,
         CaretRight,
@@ -1420,6 +1421,12 @@ impl Render for MemeView {
                 this.finish_edit(window);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &InsertNewline, window, cx| {
+                // Enter inserts a line break; only Escape (or clicking
+                // away) leaves edit mode.
+                this.replace_text_in_range(None, "\n", window, cx);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &DeleteChar, _window, cx| {
                 this.delete_char();
                 cx.notify();
@@ -2283,7 +2290,7 @@ fn main() {
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they
             // flow to the EntityInputHandler instead.
-            KeyBinding::new("enter", FinishEdit, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("enter", InsertNewline, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("escape", FinishEdit, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("backspace", DeleteChar, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("left", CaretLeft, Some(CHONK_EDIT_CTX)),

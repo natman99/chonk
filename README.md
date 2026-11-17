@@ -36,7 +36,7 @@ GIF exports animate when the document contains an animated layer.
 | Add caption | `T` then **click where you want it** (`Esc` cancels) |
 | Copy / paste layer | `Ctrl+C` / `Ctrl+V` (in-app clipboard) |
 | Paste files/image/text | `Ctrl+V` with empty in-app clipboard |
-| Edit selected caption | `Enter` (finish with `Enter`/`Esc`) |
+| Edit selected caption | `Enter` (inserts line breaks while editing; finish with `Esc` or click away) |
 | Move caret while editing | `←` / `→`, or click in the text |
 | Paste text into a caption | `Ctrl+V` while editing (newlines kept) |
 | Undo / redo **text** while editing | `Ctrl+Z` / `Ctrl+Y` (batched by typing burst; leaves the rest of the canvas alone) |
