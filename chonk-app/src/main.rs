@@ -2341,10 +2341,13 @@ fn main() {
             KeyBinding::new("ctrl-y", Redo, Some(CHONK_CTX)),
             KeyBinding::new("ctrl-shift-z", Redo, Some(CHONK_CTX)),
             KeyBinding::new("]", OpacityUp, Some(CHONK_CTX)),
-            // Font size on the selected caption. On Wayland, Shift+= arrives
-            // as keysym `plus` (key "+"), so the shifted-symbol spellings are
-            // the ones that actually match; the shift-= ones stay for backends
-            // that report the physical key.
+            // Font size on the selected caption. On this Wayland setup the
+            // compositor folds shift into the keysym: Shift+= arrives as
+            // key "+" with NO shift modifier (verified via CHONK_KEYS=1),
+            // so the plain shifted-symbol spellings are the ones that match.
+            KeyBinding::new("+", FontSizeUp, Some(CHONK_CTX)),
+            KeyBinding::new("_", FontSizeDown, Some(CHONK_CTX)),
+            // Fallbacks for backends that report physical key + shift.
             KeyBinding::new("shift-+", FontSizeUp, Some(CHONK_CTX)),
             KeyBinding::new("shift-_", FontSizeDown, Some(CHONK_CTX)),
             KeyBinding::new("shift-=", FontSizeUp, Some(CHONK_CTX)),
