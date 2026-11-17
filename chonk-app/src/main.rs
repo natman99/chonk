@@ -1043,9 +1043,10 @@ impl MemeView {
     /// Zoom by an adaptive factor (gentler at high magnification), anchored
     /// at the canvas center. The canvas center is 12 + ew/2 + pan — it does
     /// not depend on side — so center-anchored zoom needs no pan change.
-    fn zoom_at_center(&mut self, base: f32) {
-        let speed = 0.22f32.ln() / (1.0 + (self.zoom - 1.0).max(0.0) * 0.35);
-        let factor = if base > 1.0 { speed.exp() } else { (-speed).exp() };
+    fn zoom_at_center(&mut self, zoom_in: bool) {
+        // 1.25x per press at zoom 1, tapering to ~1.07x at zoom 8.
+        let speed = 1.25f32.ln() / (1.0 + (self.zoom - 1.0).max(0.0) * 0.35);
+        let factor = if zoom_in { speed.exp() } else { (-speed).exp() };
         self.zoom = (self.zoom * factor).clamp(0.1, 8.0);
     }
 
@@ -1500,11 +1501,11 @@ impl Render for MemeView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ZoomIn, _window, cx| {
-                this.zoom_at_center(1.25);
+                this.zoom_at_center(true);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ZoomOut, _window, cx| {
-                this.zoom_at_center(0.8);
+                this.zoom_at_center(false);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenFile, _window, cx| this.open_dialog(cx)))
@@ -2316,7 +2317,12 @@ fn main() {
             KeyBinding::new("ctrl-y", Redo, Some(CHONK_CTX)),
             KeyBinding::new("ctrl-shift-z", Redo, Some(CHONK_CTX)),
             KeyBinding::new("]", OpacityUp, Some(CHONK_CTX)),
-            // Font size on the selected caption (+ / _ are shift-= / shift--).
+            // Font size on the selected caption. On Wayland, Shift+= arrives
+            // as keysym `plus` (key "+"), so the shifted-symbol spellings are
+            // the ones that actually match; the shift-= ones stay for backends
+            // that report the physical key.
+            KeyBinding::new("shift-+", FontSizeUp, Some(CHONK_CTX)),
+            KeyBinding::new("shift-_", FontSizeDown, Some(CHONK_CTX)),
             KeyBinding::new("shift-=", FontSizeUp, Some(CHONK_CTX)),
             KeyBinding::new("shift--", FontSizeDown, Some(CHONK_CTX)),
             KeyBinding::new("[", OpacityDown, Some(CHONK_CTX)),
