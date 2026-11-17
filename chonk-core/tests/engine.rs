@@ -284,3 +284,42 @@ fn chonk_roundtrip() {
     let b = r.composite_at(&doc2, 0);
     assert_eq!(a.pixels(), b.pixels(), "roundtrip composite differs");
 }
+
+#[test]
+fn palette_extraction_finds_dominant() {
+    use chonk_core::palette;
+    // 3/4 green, 1/4 magenta: the dominant palette color must be green.
+    let mut pm = solid(64, 64, sk::Color::TRANSPARENT);
+    for y in 0..64 {
+        for x in 0..64 {
+            let c = if x < 48 {
+                sk::Color::from_rgba8(0, 200, 0, 255)
+            } else {
+                sk::Color::from_rgba8(220, 0, 220, 255)
+            };
+            let c8 = c.to_color_u8();
+            pm.pixels_mut()[y * 64 + x] =
+                sk::PremultipliedColorU8::from_rgba(c8.red(), c8.green(), c8.blue(), 255)
+                    .unwrap();
+        }
+    }
+    let pal = palette::extract(&pm, 4);
+    assert!(!pal.is_empty());
+    let u8 = |c: sk::Color| {
+        (
+            (c.red() * 255.0) as u8,
+            (c.green() * 255.0) as u8,
+            (c.blue() * 255.0) as u8,
+        )
+    };
+    let (gr, gg, gb) = u8(pal[0]);
+    let dom = pal[0];
+    assert!(gg > 150 && gr < 100, "dominant should be green, got {dom:?}");
+    let _ = gb;
+    assert!(pal.iter().any(|c| { let (r, _, b) = u8(*c); r > 150 && b > 150 }), "magenta bucket present");
+    // best_contrast against a dark bg picks a bright color.
+    let bg = sk::Color::from_rgba8(10, 10, 10, 255);
+    let best = palette::best_contrast(&pal, bg).unwrap();
+    let (br, bg2, _) = u8(best);
+    assert!(bg2 > 150 || br > 150);
+}

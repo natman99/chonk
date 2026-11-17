@@ -148,6 +148,10 @@ struct MemeView {
     /// all rasterization happens on the render worker.
     renderer: Renderer,
     composited: Option<Arc<RenderImage>>,
+    /// Last composited pixmap (palette extraction source).
+    last_pixmap: Option<Arc<sk::Pixmap>>,
+    /// Extracted palette swatches (click = recolor selected caption).
+    palette: Vec<sk::Color>,
     job_tx: std::sync::mpsc::Sender<RenderJob>,
     result_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<WorkerMsg>>>,
     seq: u64,
@@ -362,6 +366,8 @@ impl MemeView {
             doc: Self::meme_doc(),
             renderer: Renderer::new(),
             composited: None,
+            last_pixmap: None,
+            palette: Vec::new(),
             job_tx,
             result_rx: Arc::new(std::sync::Mutex::new(rr)),
             seq: 0,
@@ -429,6 +435,7 @@ impl MemeView {
         self.applied_seq = seq;
         self.in_flight = false;
         let pm = Arc::new(pm);
+        self.last_pixmap = Some(pm.clone());
         self.composited = Some(Arc::new(render_image_from_pixmap(&pm)));
         // If more happened while the job ran, render() sends the next job.
         cx.notify();
@@ -1662,7 +1669,66 @@ impl MemeView {
                 );
             panel = panel.child(row);
         }
+        // Palette section: extract from the composite, click a swatch to
+        // recolor the selected caption.
+        panel = panel
+            .child(
+                div()
+                    .id("extract-palette")
+                    .cursor_pointer()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(12.0))
+                    .text_color(rgb(th.accent))
+                    .child("EXTRACT PALETTE")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if let Some(pm) = &this.last_pixmap {
+                            this.palette = chonk_core::palette::extract(pm, 8);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap_1()
+                    .px_2()
+                    .pb_2()
+                    .children(self.palette.iter().enumerate().map(|(idx, c)| {
+                        let c8 = c.to_color_u8();
+                        let hex =
+                            ((c8.red() as u32) << 16) | ((c8.green() as u32) << 8) | c8.blue() as u32;
+                        div()
+                            .id(SharedString::from(format!("swatch{idx}")))
+                            .cursor_pointer()
+                            .w(px(20.0))
+                            .h(px(20.0))
+                            .bg(rgb(hex))
+                            .child(div().w(px(20.)).h(px(20.)).bg(rgb(hex)))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.apply_swatch(idx);
+                                cx.notify();
+                            }))
+                    })),
+            );
         panel
+    }
+
+    /// Recolor the selected caption with palette swatch `idx`.
+    fn apply_swatch(&mut self, idx: usize) {
+        let Some(c) = self.palette.get(idx).copied() else {
+            return;
+        };
+        let Some(i) = self.selected else { return };
+        self.snapshot();
+        if let Some(chonk_core::LayerKind::Text { style, .. }) =
+            self.doc.layers.get_mut(i).map(|l| &mut l.kind)
+        {
+            style.fill = c;
+            self.invalidate();
+        }
     }
 
     /// Nudge the selected layer's opacity by `delta` (clamped 0.05..1).
