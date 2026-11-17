@@ -6,6 +6,7 @@
 pub mod codecs;
 pub mod document;
 pub mod filters;
+pub mod fry;
 pub mod quote;
 pub mod render;
 pub mod palette;
@@ -13,6 +14,7 @@ pub mod save;
 pub mod template;
 pub mod svg;
 pub mod text;
+pub mod watermark;
 
 pub use document::{
     Background, BlendMode, Document, Layer, LayerKind, Shadow, Slot, SlotKind, TextAlign, TextStyle,

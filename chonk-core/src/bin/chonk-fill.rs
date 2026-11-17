@@ -15,6 +15,8 @@ fn main() {
     let mut out = None;
     let mut list = false;
     let mut frame = 0usize;
+    let mut fry_level: Option<String> = None;
+    let mut watermarks: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -40,6 +42,14 @@ fn main() {
                 list = true;
                 i += 1;
             }
+            "--fry" if i + 1 < args.len() => {
+                fry_level = Some(args[i + 1].to_ascii_lowercase());
+                i += 2;
+            }
+            "--watermark" if i + 1 < args.len() => {
+                watermarks.push(args[i + 1].clone());
+                i += 2;
+            }
             s if !s.starts_with("--") && template_path.is_none() => {
                 template_path = Some(s.to_string());
                 i += 1;
@@ -64,7 +74,7 @@ fn main() {
                 chonk_core::SlotKind::Text => "text",
                 chonk_core::SlotKind::Image => "image",
             };
-            println!("{name}\t{kind}");
+            println!("{name} ({kind})");
         }
         return;
     }
@@ -85,9 +95,31 @@ fn main() {
         }
     }
 
+    for wm in &watermarks {
+        let (plat, text) = wm.split_once('=').unwrap_or((wm.as_str(), "@reposted"));
+        let Some(style) = chonk_core::watermark::WatermarkStyle::parse(plat) else {
+            eprintln!("unknown watermark platform: {plat} (tiktok|instagram|youtube|snapchat|reddit)");
+            std::process::exit(2);
+        };
+        chonk_core::watermark::add_watermark(&mut doc, style, text);
+    }
+
     let out_path = out.expect("--out required when filling");
     let mut renderer = chonk_core::Renderer::new();
-    let pm = renderer.composite_at(&doc, frame);
+    let mut pm = renderer.composite_at(&doc, frame);
+    if let Some(level) = fry_level {
+        let spec = match level.as_str() {
+            "mild" => chonk_core::fry::FRY_MILD,
+            "medium" => chonk_core::fry::FRY_MEDIUM,
+            "heavy" => chonk_core::fry::FRY_HEAVY,
+            "ultra" => chonk_core::fry::FRY_ULTRA,
+            other => {
+                eprintln!("--fry expects mild|medium|heavy|ultra, got {other}");
+                std::process::exit(2);
+            }
+        };
+        pm = chonk_core::fry::fry(&pm, &spec);
+    }
     let ext = std::path::Path::new(&out_path)
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())

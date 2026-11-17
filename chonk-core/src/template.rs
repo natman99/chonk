@@ -41,7 +41,11 @@ pub fn fill_image(doc: &mut Document, name: &str, image: &sk::Pixmap) -> bool {
                         };
                         let mut paint = sk::PixmapPaint::default();
                         paint.quality = sk::FilterQuality::Bilinear;
-                        out.draw_pixmap(0, 0, image.as_ref(), &paint, sk::Transform::default(), None);
+                        let sc = sk::Transform::from_scale(
+                            w as f32 / image.width() as f32,
+                            h as f32 / image.height() as f32,
+                        );
+                        out.draw_pixmap(0, 0, image.as_ref(), &paint, sc, None);
                         out
                     };
                     *pixmap = scaled;

@@ -191,7 +191,9 @@ aware line breaking. Do this BEFORE Cluster 6-warp and 7-glyph-explosion.
    extraction with swatch recolor; `best_contrast` helper ready for
    smart text fill in step 4).
 3. **Fry engine + artifact/blur presets** (1) — the signature feature,
-   pure codecs, no ML.
+   pure codecs, no ML. **DONE** (real JPEG round-trip ladder mild..ultra,
+   contrast/saturation/noise, `F` in app + `--fry` in chonk-fill, fake
+   platform watermarks tiktok/ig/yt/snap/reddit via `--watermark`).
 4. **Saliency/contrast analysis + placement suggestions + impact mode +
    balanced wrap + stroke-correct outlines** (4-lite, 5) — smart feel
    without ML.

@@ -41,6 +41,7 @@ GIF exports animate when the document contains an animated layer.
 | Selected layer opacity | `]` up · `[` down (5% steps) |
 | Selected layer blend mode | `,` prev · `.` next (16 modes) |
 | Mark layer as template slot | `S` (or the `[ ]` tag in the panel) |
+| Deep-fry selected image layer | `F` (walks mild → medium → heavy → ultra) |
 | Undo / redo | `Ctrl+Z` · `Ctrl+Y` / `Ctrl+Shift+Z` |
 | Toggle light/dark theme | `Ctrl+T` |
 | Play / pause GIF | `Space` |
@@ -97,6 +98,18 @@ chonk-fill template.chonk --set top="CHONK MODE" \
 Values that name an existing file fill image slots (scaled to the slot's
 box); everything else fills text slots. Loop it over a folder or a CSV
 for batch memes.
+
+Fry and repost the whole composite from the CLI:
+
+```
+chonk-fill template.chonk --set top="CHONK MODE" \
+    --fry heavy --watermark tiktok=@chonk_enjoyer --out fried.png
+```
+
+`--fry` runs genuine JPEG round-trips (downscale → compress → blow back
+up) plus contrast/saturation blowout and noise — the real artifacts, not
+an impression of them. `--watermark` styles a fake platform overlay:
+tiktok, instagram, youtube, snapchat, reddit.
 
 ## Themes
 

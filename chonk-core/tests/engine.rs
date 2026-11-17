@@ -349,10 +349,37 @@ fn template_slots_roundtrip_and_fill() {
         if let (Some(s), LayerKind::Image { pixmap }) = (&l.slot, &l.kind) {
             if s.name == "avatar" {
                 assert_eq!((pixmap.width(), pixmap.height()), (100, 80));
+                // Scaled, not clipped: bottom-right corner must be green.
+                let p = pixmap.pixels()[79 * 100 + 99];
+                assert!(p.green() > 150, "fill must scale to the slot box, corner={p:?}");
             }
         }
     }
     // Renders fine.
     let pm = chonk_core::render::Renderer::new().composite(&doc2);
     assert_eq!(pm.width(), 300);
+}
+
+#[test]
+fn deep_fry_changes_pixels_and_keeps_size() {
+    use chonk_core::fry::{self, FRY_HEAVY, FRY_LADDER};
+    // A gradient so JPEG blocking has real signal to chew on.
+    let mut pm = sk::Pixmap::new(128, 128).unwrap();
+    for y in 0..128usize {
+        for x in 0..128usize {
+            let c = sk::Color::from_rgba8((x * 2) as u8, (y * 2) as u8, ((x + y) * 2) as u8, 255);
+            let c8 = c.to_color_u8();
+            pm.pixels_mut()[y * 128 + x] =
+                sk::PremultipliedColorU8::from_rgba(c8.red(), c8.green(), c8.blue(), 255)
+                    .unwrap();
+        }
+    }
+    let fried = fry::fry(&pm, &FRY_HEAVY);
+    assert_eq!((fried.width(), fried.height()), (128, 128));
+    // Deterministic.
+    let fried2 = fry::fry(&pm, &FRY_HEAVY);
+    assert_eq!(fried.pixels(), fried2.pixels());
+    // Actually fried: at least one pixel moved.
+    assert_ne!(fried.pixels(), pm.pixels());
+    assert_eq!(FRY_LADDER.len(), 4);
 }

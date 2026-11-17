@@ -89,6 +89,13 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
       slotN name, `[name]` tag in panel), slots persist in .chonk,
       `chonk-fill` CLI fills by name (--list/--set/--out) — verified
       end-to-end (template JSON -> filled rendered meme).
+- [x] Deep-fry engine (chonk-core/src/fry.rs): real JPEG round-trips
+      (downscale->compress->upscale), contrast/saturation blowout,
+      deterministic noise; 4-rung ladder. `F` in app (background thread,
+      snapshotted -> undoable), `--fry` in chonk-fill.
+- [x] Fake social watermarks (chonk-core/src/watermark.rs): tiktok/
+      instagram/youtube/snapchat/reddit styled caption layers;
+      `--watermark platform=@handle` in chonk-fill.
 - [ ] Layer panel v2: drag-to-reorder, slider-drag opacity.
 - [x] Busy badge: accent square in canvas corner while the worker encodes an
       export (set on dispatch, cleared on worker Status; handlers notify).

@@ -51,6 +51,7 @@ actions!(
         BlendPrev,
         BlendNext,
         ToggleSlot,
+        FryLayer,
     ]
 );
 
@@ -153,6 +154,8 @@ struct MemeView {
     last_pixmap: Option<Arc<sk::Pixmap>>,
     /// Extracted palette swatches (click = recolor selected caption).
     palette: Vec<sk::Color>,
+    /// Next rung on the deep-fry ladder (`F` walks mild -> ultra).
+    fry_rung: usize,
     job_tx: std::sync::mpsc::Sender<RenderJob>,
     result_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<WorkerMsg>>>,
     seq: u64,
@@ -369,6 +372,7 @@ impl MemeView {
             composited: None,
             last_pixmap: None,
             palette: Vec::new(),
+            fry_rung: 0,
             job_tx,
             result_rx: Arc::new(std::sync::Mutex::new(rr)),
             seq: 0,
@@ -1240,6 +1244,10 @@ impl Render for MemeView {
                 this.toggle_slot();
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &FryLayer, _window, cx| {
+                this.fry_selected(cx);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -1761,6 +1769,57 @@ impl MemeView {
         }
     }
 
+    /// Deep-fry the selected image layer on a background thread.
+    /// Each `F` walks the ladder (mild -> medium -> heavy -> ultra);
+    /// the snapshot happens up front so one press = one undo step.
+    fn fry_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(i) = self.selected else { return };
+        let targets: Vec<sk::Pixmap> = match &self.doc.layers[i].kind {
+            chonk_core::LayerKind::Image { pixmap } => vec![pixmap.clone()],
+            chonk_core::LayerKind::AnimatedImage { image } => image.frames.clone(),
+            _ => {
+                self.status = Some("fry needs an image layer".into());
+                return;
+            }
+        };
+        self.snapshot();
+        let rung = self.fry_rung.min(chonk_core::fry::FRY_LADDER.len() - 1);
+        self.fry_rung = rung + 1;
+        let spec = chonk_core::fry::FRY_LADDER[rung];
+        let name = chonk_core::fry::FRY_NAMES[rung];
+        self.busy = true;
+        self.status = Some(format!("deep-frying: {name}"));
+        let me = cx.entity().downgrade();
+        cx.spawn(async move |_this, cx: &mut AsyncApp| {
+            let fried = cx
+                .background_executor()
+                .spawn(async move {
+                    targets.iter().map(|pm| chonk_core::fry::fry(pm, &spec)).collect::<Vec<_>>()
+                })
+                .await;
+            let _ = me.update(cx, |v, cx| {
+                v.busy = false;
+                if let Some(l) = v.doc.layers.get_mut(i) {
+                    match &mut l.kind {
+                        chonk_core::LayerKind::Image { pixmap } => {
+                            if let Some(f) = fried.into_iter().next() {
+                                *pixmap = f;
+                            }
+                        }
+                        chonk_core::LayerKind::AnimatedImage { image } => {
+                            image.frames = fried;
+                        }
+                        _ => {}
+                    }
+                    v.invalidate();
+                    v.status = Some(format!("deep-fried: {name}"));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Mark/unmark the selected layer as a template slot (S).
     fn toggle_slot(&mut self) {
         let Some(i) = self.selected else { return };
@@ -1896,6 +1955,7 @@ fn main() {
             KeyBinding::new(".", BlendNext, Some(CHONK_CTX)),
             KeyBinding::new(",", BlendPrev, Some(CHONK_CTX)),
             KeyBinding::new("s", ToggleSlot, Some(CHONK_CTX)),
+            KeyBinding::new("f", FryLayer, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they
