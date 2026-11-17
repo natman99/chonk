@@ -49,6 +49,8 @@ actions!(
         CycleDown,
         ToggleTheme,
         OpacityUp,
+        FontSizeUp,
+        FontSizeDown,
         OpacityDown,
         BlendPrev,
         BlendNext,
@@ -1527,6 +1529,14 @@ impl Render for MemeView {
                 this.adjust_opacity(-0.05);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &FontSizeUp, _window, cx| {
+                this.adjust_font_size(1.15);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FontSizeDown, _window, cx| {
+                this.adjust_font_size(1.0 / 1.15);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &BlendPrev, _window, cx| {
                 this.cycle_blend(-1);
                 cx.notify();
@@ -1948,6 +1958,15 @@ impl MemeView {
                         })),
                 )
                 .child(div().flex_1().child(layer_name(l)))
+                .child(match &l.kind {
+                    // Font size tag on captions (+ / _ adjusts the selected one).
+                    LayerKind::Text { style, .. } => div()
+                        .text_size(px(10.0))
+                        .text_color(rgb(th.dim))
+                        .child(format!("{:.0}pt", style.font_size))
+                        .into_any(),
+                    _ => div().into_any(),
+                })
                 .child(
                     // Blend mode (, / . cycles the selected layer).
                     div()
@@ -2093,6 +2112,25 @@ impl MemeView {
                 l.opacity = (l.opacity + delta).clamp(0.05, 1.0);
                 self.invalidate();
             }
+        }
+    }
+
+    /// Nudge the selected caption's font size by a factor (clamped).
+    /// Tagged snapshot: a held-key burst coalesces into one undo step.
+    fn adjust_font_size(&mut self, factor: f32) {
+        let Some(i) = self.selected else { return };
+        let is_text = matches!(self.doc.layers[i].kind, chonk_core::LayerKind::Text { .. });
+        if !is_text {
+            return;
+        }
+        self.snapshot_tagged("fontsize");
+        let old_rect = self.layer_doc_rect(i);
+        if let Some(LayerKind::Text { style, .. }) =
+            self.doc.layers.get_mut(i).map(|l| &mut l.kind)
+        {
+            style.font_size = (style.font_size * factor).clamp(6.0, 2000.0);
+            self.status = Some(format!("font size: {:.0} pt", style.font_size));
+            self.invalidate_caption_edit(i, old_rect);
         }
     }
 
@@ -2278,6 +2316,9 @@ fn main() {
             KeyBinding::new("ctrl-y", Redo, Some(CHONK_CTX)),
             KeyBinding::new("ctrl-shift-z", Redo, Some(CHONK_CTX)),
             KeyBinding::new("]", OpacityUp, Some(CHONK_CTX)),
+            // Font size on the selected caption (+ / _ are shift-= / shift--).
+            KeyBinding::new("shift-=", FontSizeUp, Some(CHONK_CTX)),
+            KeyBinding::new("shift--", FontSizeDown, Some(CHONK_CTX)),
             KeyBinding::new("[", OpacityDown, Some(CHONK_CTX)),
             KeyBinding::new(".", BlendNext, Some(CHONK_CTX)),
             KeyBinding::new(",", BlendPrev, Some(CHONK_CTX)),
