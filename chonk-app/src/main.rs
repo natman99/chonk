@@ -47,7 +47,9 @@ actions!(
         CycleDown,
         ToggleTheme,
         OpacityUp,
-        OpacityDown
+        OpacityDown,
+        BlendPrev,
+        BlendNext,
     ]
 );
 
@@ -1218,6 +1220,14 @@ impl Render for MemeView {
                 this.adjust_opacity(-0.05);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &BlendPrev, _window, cx| {
+                this.cycle_blend(-1);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &BlendNext, _window, cx| {
+                this.cycle_blend(1);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleQuote, _window, cx| {
                 this.toggle_quote();
                 cx.notify();
@@ -1592,6 +1602,13 @@ impl MemeView {
                 )
                 .child(div().flex_1().child(layer_name(l)))
                 .child(
+                    // Blend mode (, / . cycles the selected layer).
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(rgb(if l.blend == chonk_core::BlendMode::Normal { th.dim } else { th.accent }))
+                        .child(l.blend.short_name()),
+                )
+                .child(
                     // Opacity bar (keyboard [ / ] adjusts the selected layer).
                     div()
                         .w(px(40.0))
@@ -1654,6 +1671,24 @@ impl MemeView {
             self.snapshot_tagged("opacity");
             if let Some(l) = self.doc.layers.get_mut(i) {
                 l.opacity = (l.opacity + delta).clamp(0.05, 1.0);
+                self.invalidate();
+            }
+        }
+    }
+
+    /// Cycle the selected layer's blend mode (dir = +1 / -1 through CYCLE).
+    fn cycle_blend(&mut self, dir: i32) {
+        if let Some(i) = self.selected {
+            self.snapshot_tagged("blend");
+            if let Some(l) = self.doc.layers.get_mut(i) {
+                let pos = chonk_core::BlendMode::CYCLE
+                    .iter()
+                    .position(|b| *b == l.blend)
+                    .unwrap_or(0);
+                let n = chonk_core::BlendMode::CYCLE.len() as i64;
+                let next = (((pos as i64 + dir as i64).rem_euclid(n))) as usize;
+                l.blend = chonk_core::BlendMode::CYCLE[next];
+                self.status = Some(format!("blend: {}", l.blend.short_name()));
                 self.invalidate();
             }
         }
@@ -1733,6 +1768,8 @@ fn main() {
             KeyBinding::new("ctrl-shift-z", Redo, Some(CHONK_CTX)),
             KeyBinding::new("]", OpacityUp, Some(CHONK_CTX)),
             KeyBinding::new("[", OpacityDown, Some(CHONK_CTX)),
+            KeyBinding::new(".", BlendNext, Some(CHONK_CTX)),
+            KeyBinding::new(",", BlendPrev, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they

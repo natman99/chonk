@@ -3,7 +3,8 @@
 //! image-free documents (templates!) are human-readable and git-diffable.
 
 use crate::document::{
-    AnimatedImage, Background, Document, Layer, LayerKind, Shadow, TextAlign, TextStyle, Transform,
+    AnimatedImage, Background, BlendMode, Document, Layer, LayerKind, Shadow, TextAlign, TextStyle,
+    Transform,
 };
 use crate::tiny_skia as sk;
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,7 @@ struct SavedLayer {
     rotation_deg: f32,
     opacity: f32,
     visible: bool,
+    blend: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -201,6 +203,7 @@ fn save_layer(l: &Layer) -> Result<SavedLayer, String> {
         rotation_deg: l.transform.rotation_deg,
         opacity: l.opacity,
         visible: l.visible,
+        blend: BlendMode::CYCLE.iter().position(|b| *b == l.blend).unwrap_or(0) as u8,
     })
 }
 
@@ -224,6 +227,7 @@ fn load_layer(l: SavedLayer) -> Result<Layer, String> {
         transform: Transform { x: l.x, y: l.y, scale: l.scale, rotation_deg: l.rotation_deg },
         opacity: l.opacity,
         visible: l.visible,
+        blend: BlendMode::CYCLE.get(l.blend as usize).copied().unwrap_or(BlendMode::Normal),
     })
 }
 

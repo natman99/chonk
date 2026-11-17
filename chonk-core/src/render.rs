@@ -210,18 +210,18 @@ impl Renderer {
         for layer in doc.layers.iter().filter(|l| l.visible) {
             match &layer.kind {
                 LayerKind::Image { pixmap } => {
-                    blit(canvas, pixmap, &layer.transform, layer.opacity, scale);
+                    blit(canvas, pixmap, &layer.transform, layer.opacity, layer.blend, scale);
                 }
                 LayerKind::AnimatedImage { image } => {
-                    blit(canvas, image.frame(frame), &layer.transform, layer.opacity, scale);
+                    blit(canvas, image.frame(frame), &layer.transform, layer.opacity, layer.blend, scale);
                 }
                 LayerKind::Svg { tree } => {
                     let pm = crate::svg::render(tree);
-                    blit(canvas, &pm, &layer.transform, layer.opacity, scale);
+                    blit(canvas, &pm, &layer.transform, layer.opacity, layer.blend, scale);
                 }
                 LayerKind::Text { text, style } => {
                     if let Some(rt) = self.text.render(text, style) {
-                        blit(canvas, &rt.pixmap, &layer.transform, layer.opacity, scale);
+                        blit(canvas, &rt.pixmap, &layer.transform, layer.opacity, layer.blend, scale);
                     }
                 }
             }
@@ -229,9 +229,10 @@ impl Renderer {
     }
 }
 
-fn blit(canvas: &mut sk::Pixmap, pm: &sk::Pixmap, t: &crate::Transform, opacity: f32, scale: f32) {
+fn blit(canvas: &mut sk::Pixmap, pm: &sk::Pixmap, t: &crate::Transform, opacity: f32, blend: crate::BlendMode, scale: f32) {
     let mut paint = sk::PixmapPaint::default();
     paint.opacity = opacity.clamp(0.0, 1.0);
+    paint.blend_mode = blend.to_skia();
     // tiny-skia's fast path: an untransformed blit is a straight blend.
     // Bicubic only pays off on scaled/rotated layers; translation alone
     // (drags) stays Nearest — Bilinear in a debug build costs 10x for

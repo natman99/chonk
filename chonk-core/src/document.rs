@@ -107,17 +107,104 @@ pub enum LayerKind {
     Text { text: String, style: TextStyle },
 }
 
+/// Porter-Duff separable blend modes for layer compositing.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl BlendMode {
+    pub fn to_skia(self) -> sk::BlendMode {
+        match self {
+            BlendMode::Normal => sk::BlendMode::SourceOver,
+            BlendMode::Multiply => sk::BlendMode::Multiply,
+            BlendMode::Screen => sk::BlendMode::Screen,
+            BlendMode::Overlay => sk::BlendMode::Overlay,
+            BlendMode::Darken => sk::BlendMode::Darken,
+            BlendMode::Lighten => sk::BlendMode::Lighten,
+            BlendMode::ColorDodge => sk::BlendMode::ColorDodge,
+            BlendMode::ColorBurn => sk::BlendMode::ColorBurn,
+            BlendMode::HardLight => sk::BlendMode::HardLight,
+            BlendMode::SoftLight => sk::BlendMode::SoftLight,
+            BlendMode::Difference => sk::BlendMode::Difference,
+            BlendMode::Exclusion => sk::BlendMode::Exclusion,
+            BlendMode::Hue => sk::BlendMode::Hue,
+            BlendMode::Saturation => sk::BlendMode::Saturation,
+            BlendMode::Color => sk::BlendMode::Color,
+            BlendMode::Luminosity => sk::BlendMode::Luminosity,
+        }
+    }
+
+    /// Cycle order for the `,` / `.` keys.
+    pub const CYCLE: [BlendMode; 16] = [
+        BlendMode::Normal,
+        BlendMode::Multiply,
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::Darken,
+        BlendMode::Lighten,
+        BlendMode::ColorDodge,
+        BlendMode::ColorBurn,
+        BlendMode::HardLight,
+        BlendMode::SoftLight,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ];
+
+    pub fn short_name(self) -> &'static str {
+        match self {
+            BlendMode::Normal => "normal",
+            BlendMode::Multiply => "multiply",
+            BlendMode::Screen => "screen",
+            BlendMode::Overlay => "overlay",
+            BlendMode::Darken => "darken",
+            BlendMode::Lighten => "lighten",
+            BlendMode::ColorDodge => "dodge",
+            BlendMode::ColorBurn => "burn",
+            BlendMode::HardLight => "hardlight",
+            BlendMode::SoftLight => "softlight",
+            BlendMode::Difference => "diff",
+            BlendMode::Exclusion => "excl",
+            BlendMode::Hue => "hue",
+            BlendMode::Saturation => "sat",
+            BlendMode::Color => "color",
+            BlendMode::Luminosity => "lum",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Layer {
     pub kind: LayerKind,
     pub transform: Transform,
     pub opacity: f32,
     pub visible: bool,
+    pub blend: BlendMode,
 }
 
 impl Layer {
     pub fn new(kind: LayerKind) -> Self {
-        Self { kind, transform: Transform::default(), opacity: 1.0, visible: true }
+        Self { kind, transform: Transform::default(), opacity: 1.0, visible: true, blend: BlendMode::Normal }
     }
 }
 

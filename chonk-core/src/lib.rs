@@ -13,7 +13,7 @@ pub mod svg;
 pub mod text;
 
 pub use document::{
-    Background, Document, Layer, LayerKind, Shadow, TextAlign, TextStyle, Transform,
+    Background, BlendMode, Document, Layer, LayerKind, Shadow, TextAlign, TextStyle, Transform,
 };
 pub use quote::{QuoteBackground, QuoteSpec, quote_document};
 pub use render::Renderer;
