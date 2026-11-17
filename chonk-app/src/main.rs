@@ -20,6 +20,8 @@ actions!(
     chonk,
     [
         ToggleQuote,
+        Undo,
+        Redo,
         AddText,
         DeleteLayer,
         NudgeUp,
@@ -182,6 +184,14 @@ struct MemeView {
     /// boundary). UI-side text measurement uses `texts`.
     caret_pos: usize,
     texts: TextEngine,
+    /// Snapshot undo/redo. Document clones are cheap at meme scale
+    /// (Pixmap memcpy ~ms); history is capped.
+    undo_stack: Vec<Document>,
+    redo_stack: Vec<Document>,
+    /// True once the in-progress drag has taken its snapshot (so a pure
+    /// click, or a drag that never moves, creates no undo step).
+    drag_snapshotted: bool,
+    last_snap_tag: Option<&'static str>,
     focus_handle: FocusHandle,
 }
 
@@ -368,6 +378,10 @@ impl MemeView {
             busy: false,
             caret_pos: 0,
             texts: TextEngine::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            drag_snapshotted: false,
+            last_snap_tag: None,
             focus_handle: cx.focus_handle(),
         };
         v.recomposite();
@@ -467,6 +481,7 @@ impl MemeView {
     }
 
     fn toggle_quote(&mut self) {
+        self.snapshot();
         self.quote_mode = !self.quote_mode;
         self.doc = if self.quote_mode {
             let spec =
@@ -481,6 +496,7 @@ impl MemeView {
     }
 
     fn add_text(&mut self) {
+        self.snapshot();
         self.doc.add_text(
             "",
             TextStyle {
@@ -501,9 +517,55 @@ impl MemeView {
         self.recomposite();
     }
 
+    /// Push the current document onto the undo stack BEFORE a mutation.
+    fn snapshot(&mut self) {
+        self.undo_stack.push(self.doc.clone());
+        if self.undo_stack.len() > 64 {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+        self.last_snap_tag = None;
+    }
+
+    /// Snapshot, but repeated same-tag actions (holding an arrow key,
+    /// holding [ for opacity) coalesce into ONE undo step.
+    fn snapshot_tagged(&mut self, tag: &'static str) {
+        if self.last_snap_tag == Some(tag) {
+            return;
+        }
+        self.snapshot();
+        self.last_snap_tag = Some(tag);
+    }
+
+    fn undo(&mut self) {
+        if let Some(prev) = self.undo_stack.pop() {
+            self.redo_stack.push(self.doc.clone());
+            self.doc = prev;
+            self.after_history_change();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.doc.clone());
+            self.doc = next;
+            self.after_history_change();
+        }
+    }
+
+    fn after_history_change(&mut self) {
+        self.edit_mode = false;
+        self.drag = None;
+        if self.selected.map_or(false, |i| i >= self.doc.layers.len()) {
+            self.selected = None;
+        }
+        self.recomposite();
+    }
+
     fn delete_layer(&mut self) {
         if let Some(i) = self.selected {
             if i < self.doc.layers.len() {
+                self.snapshot();
                 self.doc.layers.remove(i);
                 self.selected = None;
                 self.recomposite();
@@ -513,6 +575,7 @@ impl MemeView {
 
     fn nudge(&mut self, dx: f32, dy: f32) {
         if let Some(i) = self.selected {
+            self.snapshot_tagged("nudge");
             if let Some(l) = self.doc.layers.get_mut(i) {
                 l.transform.x += dx;
                 l.transform.y += dy;
@@ -664,8 +727,11 @@ impl MemeView {
     }
 
     fn edit_caption(&mut self, window: &mut Window) {
-        if let Some(t) = self.selected_text() {
-            self.caret_pos = t.len();
+        let len = self.selected_text().map(|t| t.len());
+        if let Some(len) = len {
+            // One undo step per editing session, not per keystroke.
+            self.snapshot();
+            self.caret_pos = len;
             self.edit_mode = true;
             window.set_window_title("Chonk — EDITING caption (type · Enter finishes)".into());
         }
@@ -789,6 +855,7 @@ impl MemeView {
                 .await;
             let Some(p) = picked else { return };
             let _ = me.update(cx, |v, cx| {
+                v.snapshot();
                 match load_path(&mut v.doc, &p.to_string_lossy()) {
                     Ok(()) => {
                         v.selected = Some(v.doc.layers.len() - 1);
@@ -1130,6 +1197,14 @@ impl Render for MemeView {
                 this.toggle_quote();
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &Undo, _window, cx| {
+                this.undo();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Redo, _window, cx| {
+                this.redo();
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &AddText, window, cx| {
                 this.add_text();
                 window.set_window_title("Chonk — EDITING caption (type · Enter finishes)".into());
@@ -1228,6 +1303,7 @@ impl Render for MemeView {
                         }
                         if let Some(layer) = this.selected {
                             this.drag = Some((layer, ev.position.x / px(1.0), ev.position.y / px(1.0)));
+                            this.drag_snapshotted = false;
                         } else {
                             // Empty canvas: drag pans the view (GPU-only, no
                             // recomposite).
@@ -1278,6 +1354,12 @@ impl Render for MemeView {
                             return;
                         }
                         if let Some((layer, lx, ly)) = this.drag.take() {
+                            // Snapshot on the first actual movement: a pure
+                            // click never creates an undo step.
+                            if !this.drag_snapshotted {
+                                this.snapshot();
+                                this.drag_snapshotted = true;
+                            }
                             let mut region_ok = false;
                             let mut rect = (0.0, 0.0, 0.0, 0.0);
                             let mut oldx = 0.0;
@@ -1331,6 +1413,7 @@ impl Render for MemeView {
                     // Wayland/X11 file drops (gpui turns them into a drag
                     // session carrying ExternalPaths).
                     .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                        this.snapshot();
                         for p in paths.paths() {
                             match load_path(&mut this.doc, &p.to_string_lossy()) {
                                 Ok(()) => {
@@ -1474,6 +1557,7 @@ impl MemeView {
                         .text_color(rgb(if l.visible { th.text } else { th.dim }))
                         .child(if l.visible { "◉" } else { "◎" })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.snapshot();
                             if let Some(l) = this.doc.layers.get_mut(i) {
                                 l.visible = !l.visible;
                                 this.invalidate();
@@ -1525,6 +1609,7 @@ impl MemeView {
                         .child("✕")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             if i < this.doc.layers.len() {
+                                this.snapshot();
                                 this.doc.layers.remove(i);
                                 this.selected = None;
                                 this.edit_mode = false;
@@ -1541,6 +1626,7 @@ impl MemeView {
     /// Nudge the selected layer's opacity by `delta` (clamped 0.05..1).
     fn adjust_opacity(&mut self, delta: f32) {
         if let Some(i) = self.selected {
+            self.snapshot_tagged("opacity");
             if let Some(l) = self.doc.layers.get_mut(i) {
                 l.opacity = (l.opacity + delta).clamp(0.05, 1.0);
                 self.invalidate();
@@ -1550,6 +1636,7 @@ impl MemeView {
 
     /// Swap a layer with its neighbor (dir=1 moves it up the stack).
     fn move_layer(&mut self, i: usize, dir: i32) {
+        self.snapshot();
         let n = self.doc.layers.len();
         let j = if dir > 0 { i + 1 } else { match i.checked_sub(1) { Some(j) => j, None => return } };
         if j >= n {
@@ -1616,6 +1703,9 @@ fn main() {
             KeyBinding::new("tab", CycleUp, Some(CHONK_CTX)),
             KeyBinding::new("shift-tab", CycleDown, Some(CHONK_CTX)),
             KeyBinding::new("ctrl-t", ToggleTheme, Some(CHONK_CTX)),
+            KeyBinding::new("ctrl-z", Undo, Some(CHONK_CTX)),
+            KeyBinding::new("ctrl-y", Redo, Some(CHONK_CTX)),
+            KeyBinding::new("ctrl-shift-z", Redo, Some(CHONK_CTX)),
             KeyBinding::new("]", OpacityUp, Some(CHONK_CTX)),
             KeyBinding::new("[", OpacityDown, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),

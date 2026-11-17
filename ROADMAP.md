@@ -27,13 +27,35 @@ live at reduced resolution, baked at full res on export.
 
 ## Cluster 2 — Document foundations (boring, load-bearing, do FIRST)
 - [U] First-class undo/redo. Command pattern over Document, but cheaper:
-  Document snapshots with image data behind Rc (Pixmap clone is the only
-  expensive part; Rc it). History panel + Ctrl+Z/Ctrl+Shift+Z.
+      Document snapshots with image data behind Rc (Pixmap clone is the only
+      expensive part; Rc it). History panel + Ctrl+Z/Ctrl+Shift+Z.
 - [U] .chonk save format: serde (ron or compressed JSON + zip for embedded
-  images). Compact = PNG-encode embedded images inside the container.
-  Text-only diffability (ron) makes templates reviewable/shareable.
+      images). Compact = PNG-encode embedded images inside the container.
+      Text-only diffability (ron) makes templates reviewable/shareable.
 - [U] Templates = .chonk files with placeholder text slots. "Save as
-  template" + "new from template" + open-template-file. Zero extra format.
+      template" + "new from template" + open-template-file. Zero extra format.
+- Template registry (approved design):
+  - Slots promoted from layers: TEXT slots (anchor region + fit rules +
+    locked/tweakable style, named) and IMAGE slots (placeholder layer with
+    target rect + cover/contain policy). Non-slot layers locked.
+  - Slots are LIVE: auto-fit re-runs per keystroke inside the anchor;
+    contrast sampling re-picks outline/fill against the actual image slot
+    content; placement hints ("stay in this band, dodge faces").
+  - LAYOUT-ONLY templates are the shareable unit (anchors + styles + fry
+    chain, image slot empty) — legally clean, tiny, the layout IS the craft.
+    Ship a starter set of layout-only classics.
+  - Registry = watched folder (~/.local/share/chonk/templates) + index with
+    name/tags/auto-thumbnail. Sharing = send the file. A GIT REPO of
+    layout-only templates is a first-class registry source (git pull =
+    registry update; text templates diff in review). No server, no account.
+  - Per-slot STYLE PRESETS: cycle a slot's look (impact / clean /
+    handwritten / ...) with a keypress — templates as instruments.
+  - Template creation is a mode: mark slot/lock per layer, name slots, drag
+    anchors; "strip images" for layout-only export.
+  - Batch mode: template + folder = image slot auto-filled, re-fit +
+    re-sampled per image (quote cards = the quote template, batched).
+  - v1 scope (this sprint): .chonk save/load + undo/redo. Slot metadata +
+    picker + registry later; auto-fit already exists to hang off them.
 - [A] Autosave journal + crash recovery (same machinery as undo).
 - [A] Clipboard paste (Ctrl+V) for images — Wayland primary selection.
 - Everything else regresses without undo; everything else wants .chonk.
@@ -161,8 +183,9 @@ aware line breaking. Do this BEFORE Cluster 6-warp and 7-glyph-explosion.
 
 ## Build order (dependency-respecting)
 1. **Undo/redo + .chonk + templates** (Cluster 2) — everything else is
-   unsafe and unsharable without it.
+   unsafe and unsharable without it. **IN PROGRESS.**
 2. **Blend modes + palette extraction** (3, 10) — cheap, immediate range.
+   **IN PROGRESS (same sprint).**
 3. **Fry engine + artifact/blur presets** (1) — the signature feature,
    pure codecs, no ML.
 4. **Saliency/contrast analysis + placement suggestions + impact mode +
