@@ -394,3 +394,166 @@ fn fry_depth_survives_roundtrip() {
     assert_eq!(doc2.layers[0].fry_depth, 3);
     assert_eq!(doc.layers[0].fry_depth, 3);
 }
+
+#[test]
+#[ignore] // perf breakdown: cargo test --release --test engine text_edit_perf -- --ignored --nocapture
+fn text_edit_perf_breakdown() {
+    use chonk_core::text::TextEngine;
+    use chonk_core::{Document, Renderer, TextStyle};
+    let base = "when the meme opens in a single frame";
+    for &size in &[72.0f32, 150.0, 300.0] {
+        let style = TextStyle {
+            font_family: "Noto Sans".into(),
+            font_size: size,
+            max_width: Some(900.0),
+            ..TextStyle::default()
+        };
+        // 1) Text raster on cache-miss (each keystroke changes the string).
+        let mut eng = TextEngine::new();
+        let t0 = std::time::Instant::now();
+        let reps = 30;
+        for i in 0..reps {
+            let t = format!("{base} {}", &("x".repeat(i % 12)));
+            let _ = eng.render(&t, &style);
+        }
+        let raster = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+        // 2) Caret geometry (runs per keystroke + per frame while editing).
+        let t0 = std::time::Instant::now();
+        for i in 0..reps {
+            let t = format!("{base} {}", &("x".repeat(i % 12)));
+            let _ = eng.caret_geometry(&t, &style, t.len().saturating_sub(1));
+        }
+        let caret = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+        // 3) Full composite (preview scale 1.0 and 0.5) of a doc with this caption.
+        let mut doc = Document::new(1080, 1080);
+        doc.add_text(base, style.clone());
+        let mut r = Renderer::new();
+        let t0 = std::time::Instant::now();
+        for _ in 0..reps {
+            let _ = r.composite_at(&doc, 0);
+        }
+        let comp1 = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+        let t0 = std::time::Instant::now();
+        for _ in 0..reps {
+            let _ = r.composite_scaled(&doc, 0, 0.5);
+        }
+        let comp05 = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+        println!(
+            "size={size:>4}: raster={raster:.2}ms caret={caret:.2}ms composite1.0={comp1:.2}ms composite0.5={comp05:.2}ms"
+        );
+    }
+}
+
+#[test]
+#[ignore] // perf breakdown #2: realistic edit doc (photo + big caption)
+fn text_edit_perf_realistic() {
+    use chonk_core::{Document, Renderer, TextStyle};
+    let style = TextStyle {
+        font_family: "Noto Sans".into(),
+        font_size: 300.0,
+        max_width: Some(900.0),
+        ..TextStyle::default()
+    };
+    let mut doc = Document::new(1080, 1080);
+    // Photo-like noisy layer (worst case for blit/encode-free composite).
+    let mut photo = sk::Pixmap::new(1080, 1080).unwrap();
+    let mut seed: u32 = 1;
+    for px in photo.pixels_mut().iter_mut() {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        *px = sk::PremultipliedColorU8::from_rgba(
+            (seed >> 16) as u8, (seed >> 8) as u8, seed as u8, 255,
+        )
+        .unwrap();
+    }
+    doc.add_image(photo);
+    doc.add_text("when the meme opens in a single frame", style.clone());
+    let mut r = Renderer::new();
+    let reps = 20;
+    // Keystroke simulation: text changes -> raster miss + full composite.
+    let t0 = std::time::Instant::now();
+    for i in 0..reps {
+        doc.layers[1].kind = chonk_core::LayerKind::Text {
+            text: format!("when the meme opens {}", "x".repeat(i % 10)),
+            style: style.clone(),
+        };
+        let _ = r.composite_at(&doc, 0);
+    }
+    let keystroke_full = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+    // doc.clone() cost (every keystroke ships a clone to the worker).
+    let t0 = std::time::Instant::now();
+    for _ in 0..reps {
+        let _c = doc.clone();
+    }
+    let doc_clone = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+    // Cache growth: how many entries after the keystroke burst?
+    println!("keystroke_full={keystroke_full:.2}ms doc_clone={doc_clone:.2}ms");
+}
+
+#[test]
+#[ignore] // perf breakdown #3: fit_box auto-fit captions (quote text)
+fn text_edit_perf_fitbox() {
+    use chonk_core::text::TextEngine;
+    use chonk_core::TextStyle;
+    let base = "when the meme opens in a single frame";
+    for &size in &[72.0f32, 300.0] {
+        let style = TextStyle {
+            font_family: "Noto Sans".into(),
+            font_size: size,
+            max_width: Some(900.0),
+            fit_box: Some((1000.0, 500.0)),
+            ..TextStyle::default()
+        };
+        let mut eng = TextEngine::new();
+        let reps = 30;
+        let t0 = std::time::Instant::now();
+        for i in 0..reps {
+            let t = format!("{base} {}", "x".repeat(i % 12));
+            let _ = eng.render(&t, &style);
+        }
+        let raster = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+        println!("fitbox size={size:>4}: raster={raster:.2}ms");
+    }
+}
+
+#[test]
+#[ignore] // perf breakdown #4: region vs full composite for a text edit
+fn text_edit_perf_region() {
+    use chonk_core::{Document, Renderer, TextStyle};
+    let style = TextStyle {
+        font_family: "Noto Sans".into(),
+        font_size: 300.0,
+        max_width: Some(900.0),
+        ..TextStyle::default()
+    };
+    let mut doc = Document::new(1080, 1080);
+    let mut photo = sk::Pixmap::new(1080, 1080).unwrap();
+    let mut seed: u32 = 1;
+    for px in photo.pixels_mut().iter_mut() {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        *px = sk::PremultipliedColorU8::from_rgba((seed >> 16) as u8, (seed >> 8) as u8, seed as u8, 255).unwrap();
+    }
+    doc.add_image(photo);
+    doc.add_text("when the meme opens in a single frame", style.clone());
+    let mut r = Renderer::new();
+    let reps = 20;
+    let t0 = std::time::Instant::now();
+    for i in 0..reps {
+        doc.layers[1].kind = chonk_core::LayerKind::Text {
+            text: format!("when the meme opens {}", "x".repeat(i % 10)),
+            style: style.clone(),
+        };
+        let _ = r.composite_at(&doc, 0);
+    }
+    let full = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+    // Region = caption bbox union (900x~700 at font 300) — what the app now sends.
+    let t0 = std::time::Instant::now();
+    for i in 0..reps {
+        doc.layers[1].kind = chonk_core::LayerKind::Text {
+            text: format!("when the meme opens {}", "x".repeat(i % 10)),
+            style: style.clone(),
+        };
+        let _ = r.render_region_at(&doc, 0, 300, 910, 710, 0);
+    }
+    let region = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+    println!("full={full:.2}ms region={region:.2}ms");
+}

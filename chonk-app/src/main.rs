@@ -856,6 +856,38 @@ impl MemeView {
         .detach();
     }
 
+    /// Bounding rect (doc coords, padded) of layer i; None if unknown.
+    /// Rotation falls back to the bbox diagonal (conservative).
+    fn layer_doc_rect(&mut self, i: usize) -> Option<(f32, f32, f32, f32)> {
+        let l = self.doc.layers.get(i)?;
+        let (w, h) = layer_size_of(&self.doc, &mut self.renderer, i)?;
+        let s = l.transform.scale.max(0.0);
+        let (w, h) = if l.transform.rotation_deg != 0.0 {
+            let d = ((w * s) * (w * s) + (h * s) * (h * s)).sqrt();
+            (d, d)
+        } else {
+            (w * s, h * s)
+        };
+        Some((
+            l.transform.x - 2.0,
+            l.transform.y - 2.0,
+            l.transform.x + w + 2.0,
+            l.transform.y + h + 2.0,
+        ))
+    }
+
+    /// Invalidate the union of a layer's old and new rects (text edits:
+    /// only the caption's neighborhood needs recompositing, not the whole
+    /// canvas — the big win at large font sizes).
+    fn invalidate_caption_edit(&mut self, i: usize, old: Option<(f32, f32, f32, f32)>) {
+        match (old, self.layer_doc_rect(i)) {
+            (Some((x0, y0, x1, y1)), Some((a0, b0, a1, b1))) => {
+                self.invalidate_region(x0.min(a0), y0.min(b0), x1.max(a1), y1.max(b1));
+            }
+            _ => self.invalidate(),
+        }
+    }
+
     /// Full recomposite requested; actual work happens once in render().
     fn invalidate(&mut self) {
         self.dirty = true;
@@ -930,6 +962,7 @@ impl MemeView {
     fn undo_text(&mut self) {
         let Some(i) = self.selected else { return };
         let Some((prev, caret)) = self.text_undo.pop() else { return };
+        let old_rect = self.layer_doc_rect(i);
         if let Some(LayerKind::Text { text, .. }) =
             self.doc.layers.get_mut(i).map(|l| &mut l.kind)
         {
@@ -939,13 +972,14 @@ impl MemeView {
             // Next edit must start a fresh batch, not merge into the
             // undone one.
             self.last_text_edit = None;
-            self.invalidate();
+            self.invalidate_caption_edit(i, old_rect);
         }
     }
 
     fn redo_text(&mut self) {
         let Some(i) = self.selected else { return };
         let Some((next, caret)) = self.text_redo.pop() else { return };
+        let old_rect = self.layer_doc_rect(i);
         if let Some(LayerKind::Text { text, .. }) =
             self.doc.layers.get_mut(i).map(|l| &mut l.kind)
         {
@@ -953,7 +987,7 @@ impl MemeView {
             *text = next;
             self.caret_pos = caret.min(text.len());
             self.last_text_edit = None;
-            self.invalidate();
+            self.invalidate_caption_edit(i, old_rect);
         }
     }
 
@@ -1151,13 +1185,14 @@ impl MemeView {
                 return;
             }
             self.begin_text_batch(false);
+            let old_rect = self.layer_doc_rect(i);
             if let Some(LayerKind::Text { text, .. }) = self.doc.layers.get_mut(i).map(|l| &mut l.kind) {
                 let prev = floor_char_boundary(text, pos - 1);
                 let prev = if prev == pos { prev.saturating_sub(1) } else { prev };
                 if text.is_char_boundary(prev) {
                     text.remove(prev);
                     self.caret_pos = prev;
-                    self.invalidate();
+                    self.invalidate_caption_edit(i, old_rect);
                 }
             }
         }
@@ -1262,6 +1297,7 @@ impl EntityInputHandler for MemeView {
         }
         self.begin_text_batch(true);
         if let Some(i) = self.selected {
+            let old_rect = self.layer_doc_rect(i);
             if let Some(LayerKind::Text { text: t, .. }) =
                 self.doc.layers.get_mut(i).map(|l| &mut l.kind)
             {
@@ -1279,7 +1315,7 @@ impl EntityInputHandler for MemeView {
                         self.caret_pos = at + text.len();
                     }
                 }
-                self.invalidate();
+                self.invalidate_caption_edit(i, old_rect);
                 cx.notify();
             }
         }

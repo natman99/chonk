@@ -24,7 +24,11 @@ pub struct TextEngine {
     scale: swash::scale::ScaleContext,
     /// Rendered text cache keyed on (text, style): composites become pure
     /// blits for unchanged layers (drags, toggles, animation frames).
+    /// Editing churns one entry per keystroke; at large font sizes each
+    /// entry is megabytes, so it's FIFO-evicted on a 64 MB byte budget.
     cache: HashMap<String, std::sync::Arc<RenderedText>>,
+    cache_order: std::collections::VecDeque<String>,
+    cache_bytes: usize,
 }
 
 pub struct RenderedText {
@@ -48,6 +52,8 @@ impl TextEngine {
             font_system: Self::bundled_font_system(),
             scale: swash::scale::ScaleContext::new(),
             cache: HashMap::new(),
+            cache_order: std::collections::VecDeque::new(),
+            cache_bytes: 0,
         }
     }
 
@@ -163,7 +169,17 @@ impl TextEngine {
             return Some(hit.clone());
         }
         let rt = std::sync::Arc::new(self.render_uncached(text, style)?);
-        self.cache.insert(key, rt.clone());
+        let bytes = rt.pixmap.width() as usize * rt.pixmap.height() as usize * 4;
+        self.cache.insert(key.clone(), rt.clone());
+        self.cache_order.push_back(key);
+        self.cache_bytes += bytes;
+        const CACHE_BUDGET: usize = 64 << 20;
+        while self.cache_bytes > CACHE_BUDGET {
+            let Some(old_key) = self.cache_order.pop_front() else { break };
+            if let Some(old) = self.cache.remove(&old_key) {
+                self.cache_bytes -= old.pixmap.width() as usize * old.pixmap.height() as usize * 4;
+            }
+        }
         Some(rt)
     }
 
