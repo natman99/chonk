@@ -56,6 +56,7 @@ actions!(
         CopyLayer,
         Paste,
         CancelPending,
+        PasteText,
     ]
 );
 
@@ -1310,6 +1311,30 @@ impl Render for MemeView {
                 }
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &PasteText, window, cx| {
+                // Ctrl+V while editing: insert the clipboard's text at the
+                // caret (system clipboard; newlines kept for multi-line
+                // captions, other control characters stripped).
+                let Some(item) = cx.read_from_clipboard() else { return };
+                let s: String = item
+                    .entries
+                    .iter()
+                    .filter_map(|e| match e {
+                        ClipboardEntry::String(cs) => Some(cs.text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let s: String = s
+                    .chars()
+                    .filter(|c| *c == '\n' || !c.is_control())
+                    .collect();
+                if !s.is_empty() {
+                    this.replace_text_in_range(None, &s, window, cx);
+                    this.status = Some(format!("pasted {} chars into caption", s.chars().count()));
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ExportPng, window, cx| {
                 this.export("png", window);
                 cx.notify();
@@ -2129,6 +2154,7 @@ fn main() {
             KeyBinding::new("backspace", DeleteChar, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("left", CaretLeft, Some(CHONK_EDIT_CTX)),
             KeyBinding::new("right", CaretRight, Some(CHONK_EDIT_CTX)),
+            KeyBinding::new("ctrl-v", PasteText, Some(CHONK_EDIT_CTX)),
         ]);
         // Focus the view so its key context is live from the first frame.
         view.update(cx, |v, window, cx| window.focus(&v.focus_handle, cx)).ok();

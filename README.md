@@ -38,6 +38,7 @@ GIF exports animate when the document contains an animated layer.
 | Paste files/image/text | `Ctrl+V` with empty in-app clipboard |
 | Edit selected caption | `Enter` (finish with `Enter`/`Esc`) |
 | Move caret while editing | `←` / `→`, or click in the text |
+| Paste text into a caption | `Ctrl+V` while editing (newlines kept) |
 | Delete selected layer | `Del` / `Backspace` |
 | Nudge selected layer | arrow keys (10 px) |
 | Selected layer opacity | `]` up · `[` down (5% steps) |
