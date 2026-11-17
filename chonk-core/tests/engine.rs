@@ -236,3 +236,51 @@ fn composite_scaled_preview() {
     let full = r.composite_scaled(&doc, 0, 1.0);
     assert_eq!((full.width(), full.height()), (200, 100));
 }
+
+#[test]
+fn chonk_roundtrip() {
+    use chonk_core::save;
+    let mut doc = Document::new(120, 80);
+    doc.background = chonk_core::document::Background::LinearGradient {
+        x1: 0.0,
+        y1: 0.0,
+        x2: 120.0,
+        y2: 80.0,
+        stops: vec![(0.0, sk::Color::from_rgba8(20, 20, 40, 255)), (1.0, sk::Color::from_rgba8(200, 60, 20, 255))],
+    };
+    doc.add_image(solid(40, 30, sk::Color::from_rgba8(0, 255, 0, 255)));
+    doc.add_text(
+        "hello chonk",
+        TextStyle {
+            font_family: "Noto Sans".into(),
+            font_size: 24.0,
+            fill: sk::Color::from_rgba8(255, 255, 0, 255),
+            stroke: Some((sk::Color::from_rgba8(0, 0, 0, 255), 3.0)),
+            shadow: Some(chonk_core::document::Shadow {
+                dx: 2.0,
+                dy: 2.0,
+                blur: 0.0,
+                color: sk::Color::from_rgba8(0, 0, 0, 128),
+            }),
+            align: chonk_core::document::TextAlign::Center,
+            max_width: Some(100.0),
+            fit_box: None,
+        },
+    );
+    doc.layers[1].opacity = 0.5;
+    doc.layers[1].visible = false;
+
+    let json = save::to_json(&doc).expect("serialize");
+    let doc2 = save::from_json(&json).expect("deserialize");
+    assert_eq!(doc2.width, 120);
+    assert_eq!(doc2.layers.len(), 2);
+    assert!(!doc2.layers[1].visible);
+    assert!((doc2.layers[1].opacity - 0.5).abs() < f32::EPSILON);
+
+    // Composite both and compare pixels: the roundtrip must be lossless
+    // at the raster level (PNG is lossless; colors go through u8).
+    let mut r = chonk_core::render::Renderer::new();
+    let a = r.composite_at(&doc, 0);
+    let b = r.composite_at(&doc2, 0);
+    assert_eq!(a.pixels(), b.pixels(), "roundtrip composite differs");
+}

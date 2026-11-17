@@ -197,8 +197,13 @@ struct MemeView {
 
 /// Load an image/gif/svg file into the document as a new top layer.
 fn load_path(doc: &mut Document, path: &str) -> Result<(), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    if ext == "chonk" {
+        // A whole document replaces the current one.
+        *doc = chonk_core::save::load_chonk(std::path::Path::new(path))?;
+        return Ok(());
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     match ext.as_str() {
         "gif" => {
             let anim = chonk_core::codecs::load_gif(&bytes).map_err(|e| e.to_string())?;
@@ -848,8 +853,8 @@ impl MemeView {
             let picked = cx.background_executor()
                 .spawn(async {
                     rfd::FileDialog::new()
-                        .set_title("Chonk — open image")
-                        .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp"])
+                        .set_title("Chonk — open image or document")
+                        .add_filter("Images & documents", &["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "chonk"])
                         .pick_file()
                 })
                 .await;
@@ -872,12 +877,14 @@ impl MemeView {
 
     fn save_dialog(&mut self, cx: &mut Context<Self>) {
         let me = cx.entity().downgrade();
+        let doc = self.doc.clone();
         cx.spawn(async move |_this, cx: &mut AsyncApp| {
             let picked = cx.background_executor()
                 .spawn(async {
                     rfd::FileDialog::new()
                         .set_title("Chonk — save as")
-                        .set_file_name("chonk.png")
+                        .set_file_name("chonk.chonk")
+                        .add_filter("Chonk document", &["chonk"])
                         .add_filter("PNG", &["png"])
                         .add_filter("JPEG", &["jpg", "jpeg"])
                         .add_filter("WebP", &["webp"])
@@ -886,6 +893,24 @@ impl MemeView {
                 })
                 .await;
             let Some(p) = picked else { return };
+            // .chonk = the full editable document (serialized off the UI
+            // thread); anything else is an image export via the worker.
+            if p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) == Some("chonk".to_string()) {
+                let path = p.clone();
+                let msg = match cx
+                    .background_executor()
+                    .spawn(async move { chonk_core::save::save_chonk(&doc, &path) })
+                    .await
+                {
+                    Ok(()) => format!("saved {}", p.display()),
+                    Err(e) => format!("save failed: {e}"),
+                };
+                let _ = me.update(cx, |v, cx| {
+                    v.status = Some(msg);
+                    cx.notify();
+                });
+                return;
+            }
             let fmt = match p
                 .extension()
                 .and_then(|e| e.to_str())

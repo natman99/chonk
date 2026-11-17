@@ -8,6 +8,7 @@ pub mod document;
 pub mod filters;
 pub mod quote;
 pub mod render;
+pub mod save;
 pub mod svg;
 pub mod text;
 
