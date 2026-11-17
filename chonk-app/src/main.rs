@@ -1044,10 +1044,15 @@ impl MemeView {
     /// at the canvas center. The canvas center is 12 + ew/2 + pan — it does
     /// not depend on side — so center-anchored zoom needs no pan change.
     fn zoom_at_center(&mut self, zoom_in: bool) {
-        // 1.25x per press at zoom 1, tapering to ~1.07x at zoom 8.
-        let speed = 1.25f32.ln() / (1.0 + (self.zoom - 1.0).max(0.0) * 0.35);
-        let factor = if zoom_in { speed.exp() } else { (-speed).exp() };
-        self.zoom = (self.zoom * factor).clamp(0.1, 8.0);
+        // Constant multiplicative step so =/- pairs cancel exactly.
+        // (The adaptive taper belongs on the wheel, where pixel deltas
+        // compound; on discrete key presses it caused net zoom-in drift.)
+        let factor = 1.25f32;
+        self.zoom = if zoom_in {
+            (self.zoom * factor).clamp(0.1, 8.0)
+        } else {
+            (self.zoom / factor).clamp(0.1, 8.0)
+        };
     }
 
     fn finish_edit(&mut self, window: &mut Window) {
@@ -2263,6 +2268,25 @@ impl MemeView {
 
 fn main() {
     application().run(|cx: &mut App| {
+        // CHONK_KEYS=1: log every observed keystroke + resolved action to
+        // stderr (debug aid for binding mismatches; costs nothing off).
+        if std::env::var("CHONK_KEYS").is_ok() {
+            cx.observe_keystrokes(|ev, _window, _cx| {
+                let ks = &ev.keystroke;
+                eprintln!(
+                    "KEY key={:?} char={:?} mods={:?} action={} ctx={:?}",
+                    ks.key,
+                    ks.key_char,
+                    ks.modifiers,
+                    ev.action
+                        .as_ref()
+                        .map(|_| "resolved")
+                        .unwrap_or("none"),
+                    ev.context_stack,
+                );
+            })
+            .detach();
+        }
         let bounds = Bounds::centered(None, size(px(1100.0), px(900.0)), cx);
         let view = cx
             .open_window(
