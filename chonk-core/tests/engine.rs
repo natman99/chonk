@@ -557,3 +557,34 @@ fn text_edit_perf_region() {
     let region = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
     println!("full={full:.2}ms region={region:.2}ms");
 }
+
+#[test]
+#[ignore] // perf breakdown #5: layout_size vs raster for big text
+fn layout_size_perf() {
+    use chonk_core::text::TextEngine;
+    use chonk_core::TextStyle;
+    let big = "when the meme editor lays out a really long caption that wraps across many lines of a large font size and keeps going and going and going further still to stress the layout path completely";
+    for &size in &[72.0f32, 300.0] {
+        let style = TextStyle {
+            font_family: "Noto Sans".into(),
+            font_size: size,
+            max_width: Some(900.0),
+            ..TextStyle::default()
+        };
+        let mut eng = TextEngine::new();
+        let reps = 50;
+        let t0 = std::time::Instant::now();
+        for i in 0..reps {
+            let t = format!("{big} {}", "x".repeat(i % 10));
+            let _ = eng.layout_size(&t, &style);
+        }
+        let lay = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+        let t0 = std::time::Instant::now();
+        for i in 0..reps {
+            let t = format!("{big} {}", "x".repeat(i % 10));
+            let _ = eng.render(&t, &style);
+        }
+        let ras = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+        println!("size={size:>4}: layout={lay:.3}ms raster={ras:.2}ms");
+    }
+}

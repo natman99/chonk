@@ -309,6 +309,34 @@ impl TextEngine {
         buffer
     }
 
+    /// Layout-only text metrics (no glyph rasterization): pixmap-sized
+    /// (w, h) including stroke/shadow padding, computed from cosmic-text
+    /// layout alone. Used for invalidation rects, where conservative
+    /// bounds are fine and rasterizing on the caller's thread is not.
+    pub fn layout_size(&mut self, text: &str, style: &TextStyle) -> Option<(f32, f32)> {
+        if text.is_empty() {
+            return None;
+        }
+        let size = style.font_size.max(1.0);
+        let buffer = self.buffer_for(text, style, size);
+        let mut w = 0.0f32;
+        let mut top = f32::MAX;
+        let mut bottom = 0.0f32;
+        for run in buffer.layout_runs() {
+            w = w.max(run.line_w);
+            top = top.min(run.line_top);
+            bottom = bottom.max(run.line_top + run.line_height);
+        }
+        if w <= 0.0 || bottom <= top {
+            return None;
+        }
+        // Same padding render_uncached applies (stroke + shadow + blur);
+        // size-proportional slack keeps shadowed text inside the rect.
+        let stroke_w = style.stroke.map(|(_, sw)| sw).unwrap_or(0.0);
+        let pad = stroke_w + 2.0 + size * 0.25;
+        Some((w + 2.0 * pad, (bottom - top) + 2.0 * pad))
+    }
+
     /// Caret geometry for a byte index: (x, y_top, height) in the rendered
     /// pixmap's coordinate space — the space layers draw into.
     pub fn caret_geometry(

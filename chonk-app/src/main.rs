@@ -857,10 +857,17 @@ impl MemeView {
     }
 
     /// Bounding rect (doc coords, padded) of layer i; None if unknown.
-    /// Rotation falls back to the bbox diagonal (conservative).
+    /// Rotation falls back to the bbox diagonal (conservative). Text
+    /// metrics come from layout only — rasterizing here would put a
+    /// multi-MB glyph render on the UI thread every keystroke.
     fn layer_doc_rect(&mut self, i: usize) -> Option<(f32, f32, f32, f32)> {
         let l = self.doc.layers.get(i)?;
-        let (w, h) = layer_size_of(&self.doc, &mut self.renderer, i)?;
+        let (w, h) = match &l.kind {
+            LayerKind::Text { text, style } => {
+                self.renderer.text.layout_size(text, style)?
+            }
+            _ => layer_size_of(&self.doc, &mut self.renderer, i)?,
+        };
         let s = l.transform.scale.max(0.0);
         let (w, h) = if l.transform.rotation_deg != 0.0 {
             let d = ((w * s) * (w * s) + (h * s) * (h * s)).sqrt();
@@ -1342,6 +1349,12 @@ impl Render for MemeView {
             } else {
                 self.dirty_region.take()
             };
+            // Region path pays sub-doc construction; only worth it while
+            // the region is a minority of the canvas.
+            let region = region.filter(|(x0, y0, x1, y1)| {
+                (x1 - x0).max(0.0) * (y1 - y0).max(0.0)
+                    < 0.6 * self.doc.width as f32 * self.doc.height as f32
+            });
             let job = RenderJob {
                 seq: self.seq,
                 doc: self.doc.clone(),
