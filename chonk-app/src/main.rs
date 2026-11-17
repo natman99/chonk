@@ -6,10 +6,11 @@ use chonk_core::render::Renderer;
 use chonk_core::text::TextEngine;
 use chonk_core::tiny_skia as sk;
 use gpui::{
-    App, AsyncApp, Bounds, ClickEvent, Context, Corners, ElementInputHandler, EntityInputHandler,
-    ExternalPaths, FocusHandle, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, RenderImage, ScrollDelta, ScrollEvent, SharedString, UTF16Selection, Window,
-    WindowBounds, WindowOptions, actions, canvas, div, fill, point, prelude::*, px, rgb, size,
+    App, AsyncApp, Bounds, ClickEvent, ClipboardEntry, Context, Corners, ElementInputHandler,
+    EntityInputHandler, ExternalPaths, FocusHandle, KeyBinding, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollEvent, SharedString,
+    UTF16Selection, Window, WindowBounds, WindowOptions, actions, canvas, div, fill, point,
+    prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
 use std::ops::Range;
@@ -52,6 +53,9 @@ actions!(
         BlendNext,
         ToggleSlot,
         FryLayer,
+        CopyLayer,
+        Paste,
+        CancelPending,
     ]
 );
 
@@ -154,6 +158,11 @@ struct MemeView {
     last_pixmap: Option<Arc<sk::Pixmap>>,
     /// Extracted palette swatches (click = recolor selected caption).
     palette: Vec<sk::Color>,
+    /// In-app layer clipboard (Ctrl+C / Ctrl+V) — deliberately NOT the
+    /// system clipboard; system paste is only a Ctrl+V fallback.
+    layer_clip: Option<chonk_core::Layer>,
+    /// T is armed and waiting for the placement click.
+    pending_text_place: bool,
     job_tx: std::sync::mpsc::Sender<RenderJob>,
     result_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<WorkerMsg>>>,
     seq: u64,
@@ -370,6 +379,8 @@ impl MemeView {
             composited: None,
             last_pixmap: None,
             palette: Vec::new(),
+            layer_clip: None,
+            pending_text_place: false,
             job_tx,
             result_rx: Arc::new(std::sync::Mutex::new(rr)),
             seq: 0,
@@ -511,26 +522,145 @@ impl MemeView {
         self.recomposite();
     }
 
+    /// T arms placement mode: the next canvas click drops a caption there.
     fn add_text(&mut self) {
+        self.pending_text_place = true;
+        self.status = Some("click to place a caption (Esc cancels)".into());
+    }
+
+    fn place_text_at(&mut self, dx: f32, dy: f32) {
+        self.pending_text_place = false;
         self.snapshot();
+        const MW: f32 = 900.0;
+        const FS: f32 = 72.0;
         self.doc.add_text(
             "",
             TextStyle {
                 font_family: "Noto Sans".into(),
-                font_size: 72.0,
+                font_size: FS,
                 fill: sk::Color::from_rgba8(255, 255, 255, 255),
                 stroke: Some((sk::Color::from_rgba8(0, 0, 0, 255), 6.0)),
                 align: TextAlign::Center,
-                max_width: Some(900.0),
+                max_width: Some(MW),
                 ..TextStyle::default()
             },
         );
+        // Center the (center-aligned) text box on the click point.
+        if let Some(l) = self.doc.layers.last_mut() {
+            l.transform.x = dx - MW / 2.0;
+            l.transform.y = dy - FS * 0.6;
+        }
         self.selected = Some(self.doc.layers.len() - 1);
         // Go straight into editing: an empty caption shows its placeholder
         // box and is pruned if left empty on finish (no ghost layers).
         self.caret_pos = 0;
         self.edit_mode = true;
         self.recomposite();
+    }
+
+    /// Ctrl+C: copy the selected layer into the in-app clipboard. The
+    /// system clipboard is intentionally left alone.
+    fn copy_layer(&mut self) {
+        if let Some(i) = self.selected {
+            self.layer_clip = Some(self.doc.layers[i].clone());
+            self.status = Some("layer copied (in-app clipboard)".into());
+        }
+    }
+
+    /// Ctrl+V: in-app layer clipboard wins; otherwise paste from the
+    /// system clipboard (files, an image, or plain text).
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        if let Some(l) = self.layer_clip.clone() {
+            self.snapshot();
+            let mut l = l;
+            l.transform.x += 20.0;
+            l.transform.y += 20.0;
+            self.doc.layers.push(l);
+            self.selected = Some(self.doc.layers.len() - 1);
+            self.status = Some("layer pasted".into());
+            self.recomposite();
+            return;
+        }
+        let Some(item) = cx.read_from_clipboard() else {
+            self.status = Some("clipboard is empty".into());
+            return;
+        };
+        let mut loaded = 0usize;
+        let mut snapshotted = false;
+        for entry in item.entries {
+            match entry {
+                ClipboardEntry::ExternalPaths(ep) => {
+                    for p in ep.paths() {
+                        if !snapshotted {
+                            self.snapshot();
+                            snapshotted = true;
+                        }
+                        match load_path(&mut self.doc, &p.to_string_lossy()) {
+                            Ok(()) => {
+                                self.selected = Some(self.doc.layers.len() - 1);
+                                loaded += 1;
+                            }
+                            Err(e) => self.status = Some(format!("paste failed: {e}")),
+                        }
+                    }
+                }
+                ClipboardEntry::Image(img) => {
+                    match chonk_core::codecs::load_image(&img.bytes) {
+                        Ok(pm) => {
+                            if !snapshotted {
+                                self.snapshot();
+                                snapshotted = true;
+                            }
+                            self.doc.add_image(pm);
+                            self.selected = Some(self.doc.layers.len() - 1);
+                            loaded += 1;
+                        }
+                        Err(e) => self.status = Some(format!("paste failed: {e}")),
+                    }
+                }
+                ClipboardEntry::String(s) => {
+                    let t = s.text.trim().to_string();
+                    if std::path::Path::new(&t).is_file() {
+                        if !snapshotted {
+                            self.snapshot();
+                            snapshotted = true;
+                        }
+                        match load_path(&mut self.doc, &t) {
+                            Ok(()) => {
+                                self.selected = Some(self.doc.layers.len() - 1);
+                                loaded += 1;
+                            }
+                            Err(e) => self.status = Some(format!("paste failed: {e}")),
+                        }
+                    } else if !t.is_empty() {
+                        if !snapshotted {
+                            self.snapshot();
+                            snapshotted = true;
+                        }
+                        self.doc.add_text(
+                            t,
+                            TextStyle {
+                                font_family: "Noto Sans".into(),
+                                font_size: 48.0,
+                                fill: sk::Color::from_rgba8(255, 255, 255, 255),
+                                stroke: Some((sk::Color::from_rgba8(0, 0, 0, 255), 5.0)),
+                                align: TextAlign::Center,
+                                max_width: Some(900.0),
+                                ..TextStyle::default()
+                            },
+                        );
+                        self.selected = Some(self.doc.layers.len() - 1);
+                        loaded += 1;
+                    }
+                }
+            }
+        }
+        if loaded > 0 {
+            self.status = Some(format!("pasted {loaded} item(s)"));
+            self.recomposite();
+        } else if self.status.as_deref().map(|s| s.starts_with("paste failed")) != Some(true) {
+            self.status = Some("nothing to paste on the clipboard".into());
+        }
     }
 
     /// Push the current document onto the undo stack BEFORE a mutation.
@@ -1263,6 +1393,21 @@ impl Render for MemeView {
                 this.add_text();
                     cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &CopyLayer, _window, cx| {
+                this.copy_layer();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Paste, _window, cx| {
+                this.paste(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &CancelPending, _window, cx| {
+                if this.pending_text_place {
+                    this.pending_text_place = false;
+                    this.status = Some("placement cancelled".into());
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|this, _: &DeleteLayer, _window, cx| {
                 this.delete_layer();
                 cx.notify();
@@ -1308,6 +1453,12 @@ impl Render for MemeView {
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
                         let (dx, dy) = this.to_doc(ev.position.x / px(1.0), ev.position.y / px(1.0));
+                        // T armed: this click places the caption.
+                        if this.pending_text_place {
+                            this.place_text_at(dx, dy);
+                            cx.notify();
+                            return;
+                        }
                         // Topmost wins; Alt+click steps DOWN through the
                         // stack at this point (Illustrator/Inkscape style).
                         let stack = this.hit_stack(dx, dy);
@@ -1569,7 +1720,7 @@ impl Render for MemeView {
                     .text_color(rgb(if self.status.is_some() { th.text } else { th.dim }))
                     .child(
                         self.status.clone().unwrap_or_else(|| {
-                            "Q quote · T text · F deep-fry · ,/. blend · [ ] opacity · S slot · Ctrl+Z undo · drag files in".into()
+                            "Q quote · T text · F deep-fry · ,/. blend · [ ] opacity · S slot · Ctrl+C/V copy·paste · Ctrl+Z undo · drag files in".into()
                         }),
                     ),
             )
@@ -1966,6 +2117,9 @@ fn main() {
             KeyBinding::new(",", BlendPrev, Some(CHONK_CTX)),
             KeyBinding::new("s", ToggleSlot, Some(CHONK_CTX)),
             KeyBinding::new("f", FryLayer, Some(CHONK_CTX)),
+            KeyBinding::new("ctrl-c", CopyLayer, Some(CHONK_CTX)),
+            KeyBinding::new("ctrl-v", Paste, Some(CHONK_CTX)),
+            KeyBinding::new("escape", CancelPending, Some(CHONK_CTX)),
             KeyBinding::new("=", ZoomIn, Some(CHONK_CTX)),
             KeyBinding::new("-", ZoomOut, Some(CHONK_CTX)),
             // While editing, printable keys must NOT match any binding — they
