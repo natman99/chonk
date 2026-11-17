@@ -44,6 +44,14 @@ Planned / Tested-out come below. Perf numbers live in PERFORMANCE.md.
       app receives via div.on_drop::<ExternalPaths>. Needs live-user test.
 
 ## Planned
+- [ ] Properties panel (user-requested, future): a right-side panel that lists
+      the selected object's set properties and edits them inline — font size,
+      font family, fill/stroke/shadow, opacity, blend, rotation, flip, slot,
+      and anything future layer kinds add. Supersedes the scattered keyboard
+      shortcuts as the discoverable surface (keep the shortcuts too). Design
+      note: drive it from a per-kind property descriptor so new layer kinds
+      get panel rows for free; every edit routes through the same
+      snapshot_tagged + invalidate_caption_edit/region path the keyboard uses.
 - [x] In-app text editing (v1): Enter edits the selected caption live on the
       canvas (EntityInputHandler + chonk-edit key context; append/backspace,
       IME commits).

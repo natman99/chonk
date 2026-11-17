@@ -61,6 +61,13 @@ live at reduced resolution, baked at full res on export.
 - Everything else regresses without undo; everything else wants .chonk.
 
 ## Cluster 3 — Layer model completion
+- [U] Properties panel (user-requested): show the selected object's properties
+  and edit them inline — font size/family, fill/stroke/shadow, opacity, blend,
+  rotation, flip, slot, plus whatever future layer kinds expose. The
+  discoverable surface for everything that's keyboard-only today; drive it
+  from a per-kind property descriptor so new kinds get rows for free, and
+  route every edit through the existing snapshot_tagged + region-invalidate
+  path so undo and perf stay uniform.
 - [U] Per-layer blend mode (tiny-skia has full Porter-Duff + separable
   blend modes natively — cheap win, big aesthetic range: Multiply for
   watermarks, Screen for glows, Difference for fry).
