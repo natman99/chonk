@@ -111,6 +111,12 @@ up) plus contrast/saturation blowout and noise — the real artifacts, not
 an impression of them. `--watermark` styles a fake platform overlay:
 tiktok, instagram, youtube, snapchat, reddit.
 
+## Status bar
+
+Feedback (exports, deep-fries, blend changes, errors) shows in a status
+bar along the bottom of the window — never in the window title. With
+nothing to report it shows a shortcut cheat sheet.
+
 ## Themes
 
 Dark is the default; `Ctrl+T` toggles the light theme.

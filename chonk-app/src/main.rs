@@ -752,7 +752,6 @@ impl MemeView {
             self.snapshot();
             self.caret_pos = len;
             self.edit_mode = true;
-            window.set_window_title("Chonk — EDITING caption (type · Enter finishes)".into());
         }
     }
 
@@ -807,7 +806,6 @@ impl MemeView {
     fn finish_edit(&mut self, window: &mut Window) {
         self.edit_mode = false;
         self.prune_empty_caption();
-        window.set_window_title("Chonk — Q quote · T text · Enter edit · scroll zoom · drag empty pan · 0 reset".into());
     }
 
     /// An emptied caption is a ghost: remove the layer entirely.
@@ -837,7 +835,6 @@ impl MemeView {
         std::fs::create_dir_all(&dir).ok();
         let path = format!("{dir}/chonk-{ts}.{fmt}");
         self.export_to(std::path::Path::new(&path), fmt);
-        window.set_window_title(format!("Chonk — exporting {path}…").as_str());
     }
 
     /// Export to an explicit path (dialog save-as). Format from the caller.
@@ -1095,7 +1092,7 @@ impl Render for MemeView {
             // document, composite at display size (dirty-region path is
             // full-res only). Mirror render()'s side math below.
             let ew = _window.bounds().size.width / px(1.0) - 24.0 - GAP - PANEL_W;
-            let eh = _window.bounds().size.height / px(1.0) - 24.0;
+            let eh = _window.bounds().size.height / px(1.0) - 24.0 - 30.0; // -status bar+gap
             let side = (ew.min(eh).max(1.0) * self.zoom).max(40.0);
             let scale = (side / self.doc.width as f32).min(1.0).max(0.05);
             let region = if scale < 0.999 {
@@ -1120,15 +1117,12 @@ impl Render for MemeView {
         let image = self.composited.clone();
         let b = _window.bounds();
         let th = if self.dark { &DARK } else { &LIGHT };
-        if let Some(msg) = self.status.take() {
-            _window.set_window_title(format!("Chonk — {msg}").as_str());
-        }
         // Canvas element sits inside p_3 padding (12px) and shares the row
         // with the layer panel (PANEL_W + GAP). The image is a centered
         // square within the remaining area. Mirror the paint closure's math
         // so mouse->doc mapping and hit-testing line up with what is drawn.
         let ew = b.size.width / px(1.0) - 24.0 - GAP - PANEL_W;
-        let eh = b.size.height / px(1.0) - 24.0;
+        let eh = b.size.height / px(1.0) - 24.0 - 30.0; // -status bar+gap
         let base = ew.min(eh).max(1.0);
         let side = (base * self.zoom).max(40.0);
         self.view_side = side;
@@ -1152,6 +1146,14 @@ impl Render for MemeView {
         // None falls back to painting at the text box's right edge.
         let caret_geom = self.caret_doc_geom();
 
+        div()
+            .size_full()
+            .bg(rgb(th.bg))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
         div()
             .id("chonk-root")
             .key_context(if self.edit_mode { CHONK_EDIT_CTX } else { CHONK_CTX })
@@ -1262,8 +1264,7 @@ impl Render for MemeView {
             }))
             .on_action(cx.listener(|this, _: &AddText, window, cx| {
                 this.add_text();
-                window.set_window_title("Chonk — EDITING caption (type · Enter finishes)".into());
-                cx.notify();
+                    cx.notify();
             }))
             .on_action(cx.listener(|this, _: &DeleteLayer, _window, cx| {
                 this.delete_layer();
@@ -1293,17 +1294,12 @@ impl Render for MemeView {
                         .any(|l| matches!(l.kind, LayerKind::AnimatedImage { .. }));
                 if has_anim {
                     this.set_playing(!this.playing, cx);
-                    window.set_window_title(if this.playing {
-                        "Chonk — playing (space to pause)".into()
-                    } else {
-                        "Chonk — paused".into()
-                    });
                     cx.notify();
                 }
             }))
-            .size_full()
-            .bg(rgb(th.bg))
-            .p_3()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .flex()
             .flex_row()
             .gap_2()
@@ -1562,7 +1558,24 @@ impl Render for MemeView {
                         },
                     ).size_full()),
             )
-            .child(self.layer_panel(th, cx))
+            .child(self.layer_panel(th, cx)),
+            )
+            .child(
+                // Status bar: feedback lives here, never in the window title.
+                div()
+                    .flex_none()
+                    .w_full()
+                    .h(px(22.0))
+                    .px_2()
+                    .bg(rgb(th.panel))
+                    .text_size(px(11.5))
+                    .text_color(rgb(if self.status.is_some() { th.text } else { th.dim }))
+                    .child(
+                        self.status.clone().unwrap_or_else(|| {
+                            "Q quote · T text · F deep-fry · ,/. blend · [ ] opacity · S slot · Ctrl+Z undo · drag files in".into()
+                        }),
+                    ),
+            )
     }
 }
 
@@ -1902,10 +1915,7 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    window.set_window_title(
-                        "Chonk — Q quote · T text · Enter edit · scroll zoom · drag empty pan · E/J/W/G export · space play"
-                            .into(),
-                    );
+                    window.set_window_title("Chonk".into());
                     cx.new(MemeView::new)
                 },
             )
