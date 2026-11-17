@@ -108,6 +108,8 @@ struct SavedLayer {
     blend: u8,
     #[serde(default)]
     slot: Option<(String, u8)>, // (name, 0=text / 1=image)
+    #[serde(default)]
+    fry_depth: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -209,6 +211,7 @@ fn save_layer(l: &Layer) -> Result<SavedLayer, String> {
         slot: l.slot.as_ref().map(|s| {
             (s.name.clone(), if s.kind == SlotKind::Text { 0 } else { 1 })
         }),
+        fry_depth: l.fry_depth,
     })
 }
 
@@ -237,6 +240,7 @@ fn load_layer(l: SavedLayer) -> Result<Layer, String> {
             name,
             kind: if k == 0 { SlotKind::Text } else { SlotKind::Image },
         }),
+        fry_depth: l.fry_depth,
     })
 }
 

@@ -154,8 +154,6 @@ struct MemeView {
     last_pixmap: Option<Arc<sk::Pixmap>>,
     /// Extracted palette swatches (click = recolor selected caption).
     palette: Vec<sk::Color>,
-    /// Next rung on the deep-fry ladder (`F` walks mild -> ultra).
-    fry_rung: usize,
     job_tx: std::sync::mpsc::Sender<RenderJob>,
     result_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<WorkerMsg>>>,
     seq: u64,
@@ -372,7 +370,6 @@ impl MemeView {
             composited: None,
             last_pixmap: None,
             palette: Vec::new(),
-            fry_rung: 0,
             job_tx,
             result_rx: Arc::new(std::sync::Mutex::new(rr)),
             seq: 0,
@@ -1796,8 +1793,11 @@ impl MemeView {
             }
         };
         self.snapshot();
-        let rung = self.fry_rung.min(chonk_core::fry::FRY_LADDER.len() - 1);
-        self.fry_rung = rung + 1;
+        // Ladder position lives on the layer (undo restores it with the
+        // pixels); bump it up front so rapid presses walk the ladder.
+        let rung = (self.doc.layers[i].fry_depth as usize)
+            .min(chonk_core::fry::FRY_LADDER.len() - 1);
+        self.doc.layers[i].fry_depth = self.doc.layers[i].fry_depth.saturating_add(1);
         let spec = chonk_core::fry::FRY_LADDER[rung];
         let name = chonk_core::fry::FRY_NAMES[rung];
         self.busy = true;

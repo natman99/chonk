@@ -383,3 +383,14 @@ fn deep_fry_changes_pixels_and_keeps_size() {
     assert_ne!(fried.pixels(), pm.pixels());
     assert_eq!(FRY_LADDER.len(), 4);
 }
+
+#[test]
+fn fry_depth_survives_roundtrip() {
+    let mut doc = Document::new(64, 64);
+    doc.add_image(solid(64, 64, sk::Color::from_rgba8(10, 20, 30, 255)));
+    doc.layers[0].fry_depth = 3;
+    let text = chonk_core::save::to_json(&doc).unwrap();
+    let doc2 = chonk_core::save::from_json(&text).unwrap();
+    assert_eq!(doc2.layers[0].fry_depth, 3);
+    assert_eq!(doc.layers[0].fry_depth, 3);
+}

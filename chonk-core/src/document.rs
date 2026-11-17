@@ -203,6 +203,10 @@ pub struct Layer {
     /// Template slot: fillable by name (see template.rs). A document
     /// with slots is a template; filling one produces a meme.
     pub slot: Option<Slot>,
+    /// How many deep-fry rungs have been applied (F uses rung = depth,
+    /// clamped to the ladder). Lives on the layer so undo/redo and
+    /// .chonk roundtrips keep the ladder position honest.
+    pub fry_depth: u8,
 }
 
 /// A named, fillable slot in a template document.
@@ -222,7 +226,7 @@ pub enum SlotKind {
 
 impl Layer {
     pub fn new(kind: LayerKind) -> Self {
-        Self { kind, transform: Transform::default(), opacity: 1.0, visible: true, blend: BlendMode::Normal, slot: None }
+        Self { kind, transform: Transform::default(), opacity: 1.0, visible: true, blend: BlendMode::Normal, slot: None, fry_depth: 0 }
     }
 }
 
